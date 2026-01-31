@@ -7,11 +7,6 @@ use crate::feed::Episode;
 /// Maximum length for the title portion of a filename
 const MAX_TITLE_LENGTH: usize = 100;
 
-/// Check if a character is allowed in filenames (whitelist approach)
-fn is_valid_filename_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ')
-}
-
 /// Generate a filename stem (without extension) for an episode
 ///
 /// Format: "YYYY-MM-DD-sanitized-title" or "undated-sanitized-title"
@@ -60,12 +55,13 @@ pub fn generate_filename(episode: &Episode) -> String {
     format!("{}.{}", stem, ext)
 }
 
-/// Sanitize a title for use in a filename using whitelist approach
+/// Sanitize a title for use in a filename
+///
+/// Uses sanitize_filename to remove/replace filesystem-invalid characters
+/// while preserving Unicode. Then normalizes whitespace and limits length.
 fn sanitize_title(title: &str) -> String {
-    let sanitized: String = title
-        .chars()
-        .map(|c| if is_valid_filename_char(c) { c } else { '-' })
-        .collect();
+    // Remove filesystem-invalid characters (preserves Unicode)
+    let sanitized = sanitize_filename::sanitize(title);
 
     // Collapse multiple spaces/dashes into single dash
     let collapsed = collapse_separators(&sanitized);
@@ -186,32 +182,34 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_replaces_special_chars_with_dash() {
-        assert_eq!(sanitize_title("a:b/c\\d"), "a-b-c-d");
+    fn sanitize_removes_invalid_chars() {
+        // sanitize_filename removes these characters entirely
+        let result = sanitize_title("a:b/c\\d");
+        assert!(!result.contains(':'));
+        assert!(!result.contains('/'));
+        assert!(!result.contains('\\'));
     }
 
     #[test]
-    fn sanitize_replaces_quotes_and_brackets() {
-        assert_eq!(
-            sanitize_title("\"quoted\" <angle> [square]"),
-            "quoted-angle-square"
-        );
+    fn sanitize_removes_quotes_and_angle_brackets() {
+        let result = sanitize_title("\"quoted\" <angle> [square]");
+        assert!(!result.contains('"'));
+        assert!(!result.contains('<'));
+        assert!(!result.contains('>'));
+        // Square brackets are valid in filenames
+        assert!(result.contains('[') && result.contains(']'));
     }
 
     #[test]
-    fn sanitize_handles_unicode_chars() {
-        // Non-ASCII chars should be replaced
-        assert_eq!(sanitize_title("Café résumé"), "Caf-r-sum");
+    fn sanitize_preserves_unicode_chars() {
+        // Unicode characters are now preserved
+        assert_eq!(sanitize_title("Café résumé"), "Café-résumé");
     }
 
     #[test]
-    fn sanitize_handles_emoji() {
-        assert_eq!(sanitize_title("Hello 🎙️ World"), "Hello-World");
-    }
-
-    #[test]
-    fn sanitize_collapses_consecutive_invalid_chars() {
-        assert_eq!(sanitize_title("a:::b///c"), "a-b-c");
+    fn sanitize_preserves_emoji() {
+        // Emoji are valid filename characters on modern systems
+        assert_eq!(sanitize_title("Hello 🎙️ World"), "Hello-🎙️-World");
     }
 
     #[test]
@@ -230,23 +228,28 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_handles_only_invalid_chars() {
-        assert_eq!(sanitize_title(":::///"), "");
-    }
-
-    #[test]
     fn sanitize_preserves_numbers() {
         assert_eq!(sanitize_title("Episode 42"), "Episode-42");
     }
 
     #[test]
-    fn sanitize_handles_path_separators() {
-        assert_eq!(sanitize_title("path/to\\file"), "path-to-file");
+    fn sanitize_removes_path_separators() {
+        let result = sanitize_title("path/to\\file");
+        assert!(!result.contains('/'));
+        assert!(!result.contains('\\'));
     }
 
     #[test]
     fn sanitize_handles_newlines_and_tabs() {
-        assert_eq!(sanitize_title("line1\nline2\ttab"), "line1-line2-tab");
+        // sanitize_filename removes control characters entirely
+        assert_eq!(sanitize_title("line1\nline2\ttab"), "line1line2tab");
+    }
+
+    #[test]
+    fn sanitize_handles_international_titles() {
+        assert_eq!(sanitize_title("日本語タイトル"), "日本語タイトル");
+        assert_eq!(sanitize_title("Ελληνικά"), "Ελληνικά");
+        assert_eq!(sanitize_title("مرحبا"), "مرحبا");
     }
 
     // === Truncation tests ===
@@ -489,53 +492,5 @@ mod tests {
     #[test]
     fn collapse_preserves_non_separators() {
         assert_eq!(collapse_separators("ab cd ef"), "ab-cd-ef");
-    }
-
-    // === Valid char tests ===
-
-    #[test]
-    fn valid_char_accepts_lowercase() {
-        assert!(is_valid_filename_char('a'));
-        assert!(is_valid_filename_char('z'));
-    }
-
-    #[test]
-    fn valid_char_accepts_uppercase() {
-        assert!(is_valid_filename_char('A'));
-        assert!(is_valid_filename_char('Z'));
-    }
-
-    #[test]
-    fn valid_char_accepts_digits() {
-        assert!(is_valid_filename_char('0'));
-        assert!(is_valid_filename_char('9'));
-    }
-
-    #[test]
-    fn valid_char_accepts_special() {
-        assert!(is_valid_filename_char('-'));
-        assert!(is_valid_filename_char('_'));
-        assert!(is_valid_filename_char('.'));
-        assert!(is_valid_filename_char(' '));
-    }
-
-    #[test]
-    fn valid_char_rejects_special_chars() {
-        assert!(!is_valid_filename_char('/'));
-        assert!(!is_valid_filename_char('\\'));
-        assert!(!is_valid_filename_char(':'));
-        assert!(!is_valid_filename_char('*'));
-        assert!(!is_valid_filename_char('?'));
-        assert!(!is_valid_filename_char('"'));
-        assert!(!is_valid_filename_char('<'));
-        assert!(!is_valid_filename_char('>'));
-        assert!(!is_valid_filename_char('|'));
-    }
-
-    #[test]
-    fn valid_char_rejects_unicode() {
-        assert!(!is_valid_filename_char('é'));
-        assert!(!is_valid_filename_char('ñ'));
-        assert!(!is_valid_filename_char('中'));
     }
 }
