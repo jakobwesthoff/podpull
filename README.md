@@ -138,7 +138,7 @@ podpull makes that easy — point it at a feed, run it periodically (cron job, a
 
 ## Limitations
 
-**Episodes without GUIDs:** Some RSS feeds don't include GUIDs for episodes. podpull can't reliably detect duplicates in this case and will re-download those episodes on every sync. Complain to your podcast's publisher, not me.
+**Episodes without GUIDs:** Some RSS feeds don't include GUIDs for episodes. In this case, podpull uses the episode's download URL as a fallback identifier. This works fine unless the podcast host changes URLs (CDN migrations, hosting changes, etc.) — then those episodes will be re-downloaded since they appear as "new" episodes with different identifiers.
 
 **Feed quirks:** RSS is a "standard" in the same way that HTML was a standard in 2003 — everyone does it slightly differently. podpull handles the common cases and iTunes podcast extensions, but exotic feeds might not parse perfectly.
 
