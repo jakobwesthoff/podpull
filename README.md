@@ -76,12 +76,19 @@ podpull ./feed.xml ~/Podcasts/my-show/
 podpull -c 5 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
 ```
 
-**Just grab the latest 10 episodes:**
+**Gradually download a large back-catalog:**
 ```bash
 podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+# => Downloads 10 newest episodes
+
+# Run again later...
+podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+# => Downloads the NEXT 10 episodes (previously downloaded ones are skipped)
 ```
 
-Episodes are sorted by publication date (newest first), so `-l 10` always downloads the 10 most recent episodes. Episodes without a publication date are downloaded last.
+The `--limit` option applies to episodes that haven't been downloaded yet. Already-downloaded episodes (identified by their GUID) are excluded before the limit is applied. This means you can incrementally download a large archive by running the same command repeatedly — each run fetches the next batch of episodes until the entire catalog is downloaded.
+
+Episodes are sorted by publication date (newest first), so you always get the most recent undownloaded episodes. Episodes without a publication date are sorted last.
 
 ## Metadata Format
 
