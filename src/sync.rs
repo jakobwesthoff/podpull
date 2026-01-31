@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::Semaphore;
+use tokio::sync::Mutex;
 
 use crate::episode::{DownloadContext, download_episode, generate_filename};
 use crate::error::SyncError;
@@ -112,11 +112,17 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
-    // Download episodes in parallel
-    let semaphore = Arc::new(Semaphore::new(options.max_concurrent));
+    // Download episodes in parallel using a slot pool
+    // The slot pool serves dual purpose: limits concurrency AND provides stable slot IDs
+    let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(options.max_concurrent);
+    for slot in 0..options.max_concurrent {
+        slot_tx.send(slot).await.unwrap();
+    }
+    let slot_rx = Arc::new(Mutex::new(slot_rx));
+
     let downloaded_count = Arc::new(AtomicUsize::new(0));
     let failed_count = Arc::new(AtomicUsize::new(0));
-    let failed_episodes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let failed_episodes = Arc::new(Mutex::new(Vec::new()));
 
     let output_dir = output_dir.to_path_buf();
     let client = client.clone();
@@ -124,7 +130,11 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let mut handles = Vec::new();
 
     for (episode_index, episode) in to_download.into_iter().enumerate() {
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        // Acquire a slot from the pool BEFORE spawning (blocks until one is free)
+        // This ensures episodes are started in order
+        let download_id = slot_rx.lock().await.recv().await.unwrap();
+
+        let slot_tx = slot_tx.clone();
         let client = client.clone();
         let output_dir = output_dir.clone();
         let reporter = reporter.clone();
@@ -132,9 +142,6 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         let failed_count = failed_count.clone();
         let failed_episodes = failed_episodes.clone();
         let continue_on_error = options.continue_on_error;
-
-        // Calculate download_id from semaphore permits (0 to max_concurrent-1)
-        let download_id = episode_index % options.max_concurrent;
 
         let handle = tokio::spawn(async move {
             let context = DownloadContext {
@@ -153,7 +160,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
             let result =
                 download_episode(&client, &episode, &audio_path, &context, &reporter).await;
 
-            match result {
+            let return_result = match result {
                 Ok(_bytes) => {
                     // Write episode metadata
                     if let Err(e) = write_episode_metadata(&episode, &filename, &metadata_path) {
@@ -170,6 +177,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
                     } else {
                         downloaded_count.fetch_add(1, Ordering::SeqCst);
                     }
+                    Ok(())
                 }
                 Err(e) => {
                     reporter.report(ProgressEvent::DownloadFailed {
@@ -183,15 +191,14 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
                         .await
                         .push((episode.title.clone(), e.to_string()));
 
-                    if !continue_on_error {
-                        // Abort remaining downloads
-                        return Err(e);
-                    }
+                    if !continue_on_error { Err(e) } else { Ok(()) }
                 }
-            }
+            };
 
-            drop(permit);
-            Ok(())
+            // Return slot to the pool when done
+            let _ = slot_tx.send(download_id).await;
+
+            return_result
         });
 
         handles.push(handle);
