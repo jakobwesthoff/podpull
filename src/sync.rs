@@ -89,6 +89,9 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     // Create sync plan (episodes are sorted by pub_date, newest first)
     let plan = create_sync_plan(podcast.episodes.clone(), &state);
 
+    // Track new episodes count before applying limit
+    let new_episodes_count = plan.to_download.len();
+
     // Apply limit if specified
     let to_download: Vec<_> = if let Some(limit) = options.limit {
         plan.to_download.into_iter().take(limit).collect()
@@ -97,12 +100,14 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     };
 
     let total_to_download = to_download.len();
-    let skipped = plan.already_present.len();
+    let existing = plan.already_present.len();
+    let limited = new_episodes_count.saturating_sub(total_to_download);
 
     reporter.report(ProgressEvent::FeedParsed {
         podcast_title: podcast.title.clone(),
         total_episodes: plan.total_episodes,
-        new_episodes: total_to_download,
+        new_episodes: new_episodes_count,
+        to_download: total_to_download,
     });
 
     // Write podcast metadata
@@ -111,13 +116,14 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     if to_download.is_empty() {
         reporter.report(ProgressEvent::SyncCompleted {
             downloaded_count: 0,
-            skipped_count: skipped,
+            existing_count: existing,
+            limited_count: limited,
             failed_count: 0,
         });
 
         return Ok(SyncResult {
             downloaded: 0,
-            skipped,
+            skipped: existing,
             failed: 0,
             failed_episodes: vec![],
         });
@@ -231,7 +237,8 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
 
     reporter.report(ProgressEvent::SyncCompleted {
         downloaded_count: downloaded,
-        skipped_count: skipped,
+        existing_count: existing,
+        limited_count: limited,
         failed_count: failed,
     });
 
@@ -241,7 +248,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
 
     Ok(SyncResult {
         downloaded,
-        skipped,
+        skipped: existing,
         failed,
         failed_episodes: failed_eps,
     })

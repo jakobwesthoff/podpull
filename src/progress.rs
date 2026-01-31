@@ -14,7 +14,10 @@ pub enum ProgressEvent {
     FeedParsed {
         podcast_title: String,
         total_episodes: usize,
+        /// All episodes not yet downloaded
         new_episodes: usize,
+        /// Episodes to download after limit applied (may equal new_episodes)
+        to_download: usize,
     },
 
     /// A download is starting
@@ -76,7 +79,10 @@ pub enum ProgressEvent {
     /// Sync operation completed
     SyncCompleted {
         downloaded_count: usize,
-        skipped_count: usize,
+        /// Episodes already present in output directory
+        existing_count: usize,
+        /// New episodes not downloaded due to --limit
+        limited_count: usize,
         failed_count: usize,
     },
 }
@@ -127,6 +133,7 @@ mod tests {
             podcast_title: "Test Podcast".to_string(),
             total_episodes: 10,
             new_episodes: 5,
+            to_download: 3,
         });
 
         reporter.report(ProgressEvent::DownloadStarting {
@@ -171,7 +178,8 @@ mod tests {
 
         reporter.report(ProgressEvent::SyncCompleted {
             downloaded_count: 4,
-            skipped_count: 5,
+            existing_count: 5,
+            limited_count: 2,
             failed_count: 1,
         });
     }

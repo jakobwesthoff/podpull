@@ -120,13 +120,26 @@ impl ProgressReporter for IndicatifReporter {
                 podcast_title,
                 total_episodes,
                 new_episodes,
+                to_download,
             } => {
-                self.main_bar.set_message(format!(
-                    "{HEADPHONES}{} • {} episodes total, {} new",
-                    podcast_title.bold().green(),
-                    total_episodes.to_string().cyan(),
-                    new_episodes.to_string().yellow()
-                ));
+                if new_episodes == to_download {
+                    // No limit applied or limit >= new
+                    self.main_bar.set_message(format!(
+                        "{HEADPHONES}{} • {} total, {} new",
+                        podcast_title.bold().green(),
+                        total_episodes.to_string().cyan(),
+                        new_episodes.to_string().yellow()
+                    ));
+                } else {
+                    // Limit applied
+                    self.main_bar.set_message(format!(
+                        "{HEADPHONES}{} • {} total, {} new, downloading {}",
+                        podcast_title.bold().green(),
+                        total_episodes.to_string().cyan(),
+                        new_episodes.to_string().yellow(),
+                        to_download.to_string().green()
+                    ));
+                }
             }
 
             ProgressEvent::DownloadStarting {
@@ -216,20 +229,31 @@ impl ProgressReporter for IndicatifReporter {
 
             ProgressEvent::SyncCompleted {
                 downloaded_count,
-                skipped_count,
+                existing_count,
+                limited_count,
                 failed_count,
             } => {
                 self.main_bar.finish_and_clear();
+
+                let mut parts = vec![
+                    format!("{} downloaded", downloaded_count.to_string().green().bold()),
+                    format!("{} existing", existing_count.to_string().yellow()),
+                ];
+
+                if limited_count > 0 {
+                    parts.push(format!("{} limited", limited_count.to_string().cyan()));
+                }
+
+                parts.push(if failed_count > 0 {
+                    format!("{} failed", failed_count.to_string().red().bold())
+                } else {
+                    format!("{} failed", failed_count.to_string().green())
+                });
+
                 println!(
-                    "\n{PARTY}{} {} downloaded, {} skipped, {} failed",
+                    "\n{PARTY}{} {}",
                     "Sync complete:".bold().green(),
-                    downloaded_count.to_string().green().bold(),
-                    skipped_count.to_string().yellow(),
-                    if failed_count > 0 {
-                        failed_count.to_string().red().bold()
-                    } else {
-                        failed_count.to_string().green()
-                    }
+                    parts.join(", ")
                 );
             }
         }
