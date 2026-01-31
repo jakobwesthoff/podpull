@@ -35,7 +35,11 @@ pub struct EpisodeMetadata {
 
 impl EpisodeMetadata {
     /// Create metadata from a parsed Episode
-    pub fn from_episode(episode: &Episode, audio_filename: &str, content_hash: Option<String>) -> Self {
+    pub fn from_episode(
+        episode: &Episode,
+        audio_filename: &str,
+        content_hash: Option<String>,
+    ) -> Self {
         Self {
             title: episode.title.clone(),
             description: episode.description.clone(),
@@ -108,7 +112,11 @@ mod tests {
     #[test]
     fn from_episode_converts_all_fields() {
         let episode = make_episode();
-        let metadata = EpisodeMetadata::from_episode(&episode, "2024-01-15-test-episode.mp3", Some("sha256:abc123".to_string()));
+        let metadata = EpisodeMetadata::from_episode(
+            &episode,
+            "2024-01-15-test-episode.mp3",
+            Some("sha256:abc123".to_string()),
+        );
 
         assert_eq!(metadata.title, "Test Episode");
         assert_eq!(metadata.description, Some("A test episode".to_string()));
@@ -128,7 +136,13 @@ mod tests {
         let episode = make_episode();
         let path = dir.path().join("episode.json");
 
-        write_episode_metadata(&episode, "test.mp3", Some("sha256:abc123".to_string()), &path).unwrap();
+        write_episode_metadata(
+            &episode,
+            "test.mp3",
+            Some("sha256:abc123".to_string()),
+            &path,
+        )
+        .unwrap();
         let read_back = read_episode_metadata(&path).unwrap();
 
         assert_eq!(read_back.title, "Test Episode");

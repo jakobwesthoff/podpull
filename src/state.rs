@@ -359,8 +359,16 @@ mod tests {
         // Create episodes in random order
         let episodes = vec![
             make_episode_with_date("Old Episode", Some("guid-1"), Some(make_date(2024, 1, 1))),
-            make_episode_with_date("Newest Episode", Some("guid-2"), Some(make_date(2024, 3, 15))),
-            make_episode_with_date("Middle Episode", Some("guid-3"), Some(make_date(2024, 2, 10))),
+            make_episode_with_date(
+                "Newest Episode",
+                Some("guid-2"),
+                Some(make_date(2024, 3, 15)),
+            ),
+            make_episode_with_date(
+                "Middle Episode",
+                Some("guid-3"),
+                Some(make_date(2024, 2, 10)),
+            ),
         ];
 
         let plan = create_sync_plan(episodes, &state);
