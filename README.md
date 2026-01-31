@@ -54,7 +54,7 @@ podpull [OPTIONS] <feed> <output-dir>
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-c, --concurrent <N>` | 3 | Maximum concurrent downloads |
-| `-l, --limit <N>` | — | Only download this many episodes |
+| `-l, --limit <N>` | — | Only download the N most recent episodes |
 | `-q, --quiet` | — | Suppress progress output |
 | `-h, --help` | — | Print help |
 | `-V, --version` | — | Print version |
@@ -80,6 +80,8 @@ podpull -c 5 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
 ```bash
 podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
 ```
+
+Episodes are sorted by publication date (newest first), so `-l 10` always downloads the 10 most recent episodes. Episodes without a publication date are downloaded last.
 
 ## Metadata Format
 
