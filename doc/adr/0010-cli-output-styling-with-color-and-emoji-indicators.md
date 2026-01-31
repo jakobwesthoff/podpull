@@ -39,10 +39,17 @@ We adopt a structured, modern CLI output style using:
    - Dimmed: secondary information
 
 3. **Libraries**:
+   - `console` crate for `Emoji` type with graceful fallback on non-Unicode terminals
    - `colored` crate for ANSI color support
    - `indicatif` for progress bars with Unicode block characters (█▓░)
 
-4. **Quiet mode** (`-q` flag) suppresses all visual output for scripting.
+4. **Graceful degradation**: Using `console::Emoji` which provides ASCII fallbacks:
+   ```rust
+   static SUCCESS: Emoji<'_, '_> = Emoji("✅ ", "[+] ");
+   ```
+   On terminals without Unicode support, `[+]` is displayed instead.
+
+5. **Quiet mode** (`-q` flag) suppresses all visual output for scripting.
 
 ## Consequences
 
@@ -53,11 +60,11 @@ We adopt a structured, modern CLI output style using:
 - Emoji provide redundant cues (not color-dependent)
 
 **Trade-offs:**
-- Requires Unicode-capable terminal
 - Colors may not render in all environments (handled gracefully by `colored`)
 - Slightly larger binary due to additional dependencies
 
 **Mitigations:**
+- `console::Emoji` provides ASCII fallbacks for terminals without Unicode
 - `colored` respects `NO_COLOR` environment variable
 - Terminal detection is handled automatically
 - Quiet mode available for CI/scripting environments
