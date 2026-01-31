@@ -51,6 +51,24 @@ pub enum ProgressEvent {
         error: String,
     },
 
+    /// Download is being finalized (renamed from .partial)
+    Finalizing {
+        /// Identifies the download slot
+        download_id: usize,
+        episode_title: String,
+    },
+
+    /// Hashing completed for a download
+    HashingCompleted {
+        /// Identifies the download slot
+        download_id: usize,
+        episode_title: String,
+        hash: String,
+    },
+
+    /// Partial files were cleaned up during directory scan
+    PartialFilesCleanedUp { count: usize },
+
     /// Sync operation completed
     SyncCompleted {
         downloaded_count: usize,
@@ -133,6 +151,19 @@ mod tests {
             episode_title: "Episode 2".to_string(),
             error: "Connection timeout".to_string(),
         });
+
+        reporter.report(ProgressEvent::Finalizing {
+            download_id: 0,
+            episode_title: "Episode 1".to_string(),
+        });
+
+        reporter.report(ProgressEvent::HashingCompleted {
+            download_id: 0,
+            episode_title: "Episode 1".to_string(),
+            hash: "sha256:abc123".to_string(),
+        });
+
+        reporter.report(ProgressEvent::PartialFilesCleanedUp { count: 2 });
 
         reporter.report(ProgressEvent::SyncCompleted {
             downloaded_count: 4,
