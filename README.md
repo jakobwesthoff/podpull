@@ -1,74 +1,157 @@
 # podpull
 
-A fast, minimal CLI tool for downloading and synchronizing podcasts from RSS feeds.
-
-Built for podcast lovers who want to **backup their favorite shows** and maintain **offline access** to their personal audio library. No cloud services, no accounts, no tracking — just your podcasts, stored locally, under your control.
-
-## Features
-
-- **Download podcasts** from any RSS feed URL or local RSS file
-- **Metadata preservation** — saves episode information as JSON alongside audio files
-- **Smart synchronization** — detects already downloaded episodes and only fetches new ones
-- **Stateless operation** — no database or configuration required; the output directory *is* the state
+A fast, minimal CLI tool for downloading and synchronizing podcasts from RSS feeds. No cloud services, no accounts, no databases — just your podcasts, stored locally, under your control.
 
 ## Installation
 
-Build from source:
-
 ```bash
-git clone https://github.com/jakobwesthoff/podpull.git
-cd podpull
-cargo build --release
+cargo install podpull
 ```
 
-## Usage
+## Quick Start
 
 ```bash
-podpull <feed> <output-dir>
-```
+# Download a podcast
+podpull https://example.com/podcast/feed.xml ~/Podcasts/my-show/
 
-### Sync from a URL
-
-```bash
-podpull https://example.com/podcast/feed.xml ~/Podcasts/my-favorite-show/
-```
-
-### Sync from a local RSS file
-
-```bash
-podpull ./feed.xml ~/Podcasts/my-favorite-show/
-```
-
-### Keep your backup up to date
-
-Simply run the same command again. podpull detects existing episodes and only downloads what's new:
-
-```bash
-podpull https://example.com/podcast/feed.xml ~/Podcasts/my-favorite-show/
+# Run again later to sync new episodes
+podpull https://example.com/podcast/feed.xml ~/Podcasts/my-show/
 # => "42 episodes already downloaded, 3 new episodes to fetch"
 ```
 
-## Output Structure
+## Core Concepts
 
-podpull organizes downloads in a clean structure:
+### The Output Directory IS the State
+
+No database. No config files. No hidden state. podpull looks at what's already in the output directory and only downloads what's missing. Want to re-download an episode? Delete its files. Want to start fresh? Delete the directory. Want to know what you have? Just look.
 
 ```
-~/Podcasts/my-favorite-show/
-├── podcast.json
-├── 2024-01-15-episode-title.mp3
-├── 2024-01-15-episode-title.json
+~/Podcasts/my-show/
+├── podcast.json                      # Feed metadata
+├── 2024-01-15-episode-title.mp3      # Audio file
+├── 2024-01-15-episode-title.json     # Episode metadata
 ├── 2024-01-08-another-episode.mp3
 └── 2024-01-08-another-episode.json
 ```
 
-JSON metadata format is TBD.
+Episodes are identified by their GUID from the RSS feed. If an episode file exists with a matching GUID in its metadata, it won't be downloaded again.
+
+## Usage
+
+```
+podpull [OPTIONS] <feed> <output-dir>
+```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<feed>` | RSS feed URL or path to a local RSS file |
+| `<output-dir>` | Directory where episodes will be downloaded |
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-c, --concurrent <N>` | 3 | Maximum concurrent downloads |
+| `-l, --limit <N>` | — | Only download this many episodes |
+| `-q, --quiet` | — | Suppress progress output |
+| `-h, --help` | — | Print help |
+| `-V, --version` | — | Print version |
+
+### Examples
+
+**Sync from a URL:**
+```bash
+podpull https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+```
+
+**Sync from a local RSS file:**
+```bash
+podpull ./feed.xml ~/Podcasts/my-show/
+```
+
+**Download faster with more connections:**
+```bash
+podpull -c 5 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+```
+
+**Just grab the latest 10 episodes:**
+```bash
+podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+```
+
+## Metadata Format
+
+### podcast.json
+
+Feed-level metadata, updated on every sync:
+
+```json
+{
+  "title": "My Favorite Show",
+  "description": "A podcast about interesting things",
+  "link": "https://example.com/podcast",
+  "author": "Podcast Author",
+  "image_url": "https://example.com/cover.jpg",
+  "feed_url": "https://example.com/podcast/feed.xml",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+### Episode Metadata
+
+Per-episode metadata stored alongside each audio file:
+
+```json
+{
+  "title": "Episode Title",
+  "description": "Episode description...",
+  "pub_date": "2024-01-15T08:00:00Z",
+  "guid": "unique-episode-identifier",
+  "original_url": "https://example.com/episode.mp3",
+  "downloaded_at": "2024-01-15T10:30:00Z",
+  "duration": "01:23:45",
+  "episode_number": 42,
+  "season_number": 2,
+  "audio_filename": "2024-01-15-episode-title.mp3",
+  "content_hash": "sha256:abc123..."
+}
+```
+
+The `content_hash` is a SHA-256 hash of the downloaded file, useful for verifying integrity or detecting if a file was modified.
 
 ## Why podpull?
 
-Podcasts disappear. Feeds go offline. Hosting changes. Episodes get pulled.
+Podcasts disappear. Feeds go offline. Hosting changes. Episodes get pulled. If you have podcasts you truly care about, the only way to guarantee access is to keep your own copy.
 
-If you have podcasts you truly care about, the only way to guarantee access is to keep your own copy. podpull makes that easy — point it at a feed, run it periodically, and rest easy knowing your favorite shows are safely backed up.
+podpull makes that easy — point it at a feed, run it periodically (cron job, anyone?), and rest easy knowing your favorite shows are safely backed up.
+
+## Limitations
+
+**Episodes without GUIDs:** Some RSS feeds don't include GUIDs for episodes. podpull can't reliably detect duplicates in this case and will re-download those episodes on every sync. Complain to your podcast's publisher, not me.
+
+**Feed quirks:** RSS is a "standard" in the same way that HTML was a standard in 2003 — everyone does it slightly differently. podpull handles the common cases and iTunes podcast extensions, but exotic feeds might not parse perfectly.
+
+## Development
+
+```bash
+# Clone
+git clone https://github.com/jakobwesthoff/podpull.git
+cd podpull
+
+# Build
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run from source
+cargo run -- https://example.com/feed.xml ./output/
+```
 
 ## License
 
-MPL-2.0
+This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+Copyright (c) 2025 Jakob Westhoff <jakob@westhoffswelt.de>
