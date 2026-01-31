@@ -127,6 +127,9 @@ pub enum SyncError {
     #[error("State error: {0}")]
     State(#[from] StateError),
 
+    #[error("Metadata error: {0}")]
+    Metadata(#[from] MetadataError),
+
     #[error("All downloads failed")]
     AllDownloadsFailed,
 }

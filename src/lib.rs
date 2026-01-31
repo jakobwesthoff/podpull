@@ -5,18 +5,20 @@ pub mod http;
 pub mod metadata;
 pub mod progress;
 pub mod state;
+pub mod sync;
 
 // Re-export main types for convenience
 pub use episode::{
-    download_episode, generate_filename, generate_filename_stem, get_audio_extension,
-    DownloadContext,
+    DownloadContext, download_episode, generate_filename, generate_filename_stem,
+    get_audio_extension,
 };
 pub use error::{DownloadError, FeedError, MetadataError, StateError, SyncError};
-pub use feed::{fetch_feed, is_url, parse_feed, parse_feed_file, Enclosure, Episode, Podcast};
+pub use feed::{Enclosure, Episode, Podcast, fetch_feed, is_url, parse_feed, parse_feed_file};
 pub use http::{HttpClient, HttpResponse, ReqwestClient};
 pub use metadata::{
-    read_episode_metadata, read_podcast_metadata, write_episode_metadata, write_podcast_metadata,
-    EpisodeMetadata, PodcastMetadata,
+    EpisodeMetadata, PodcastMetadata, read_episode_metadata, read_podcast_metadata,
+    write_episode_metadata, write_podcast_metadata,
 };
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
-pub use state::{create_sync_plan, scan_output_dir, OutputState, SyncPlan};
+pub use state::{OutputState, SyncPlan, create_sync_plan, scan_output_dir};
+pub use sync::{SyncOptions, SyncResult, sync_podcast};
