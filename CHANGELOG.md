@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - HTML/XML entities in feed titles and descriptions are now properly decoded
+- Filenames now preserve Unicode characters instead of replacing them with dashes
 
 ## [1.1.0] - 2025-01-31
 
