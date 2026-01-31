@@ -6,6 +6,8 @@ Date: 2026-01-31
 
 Accepted
 
+Extended by [11. Progress reporting trait abstraction](0011-progress-reporting-trait-abstraction.md)
+
 Enabled by [4. Async runtime and HTTP client](0004-async-runtime-and-http-client.md)
 
 ## Context
