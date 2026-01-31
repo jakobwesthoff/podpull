@@ -86,7 +86,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
-    // Create sync plan
+    // Create sync plan (episodes are sorted by pub_date, newest first)
     let plan = create_sync_plan(podcast.episodes.clone(), &state);
 
     // Apply limit if specified

@@ -108,6 +108,9 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
 /// Determines which episodes need to be downloaded based on:
 /// 1. GUID matching (if episode has a GUID that matches a downloaded one, skip)
 /// 2. If no GUID match, episode will be downloaded
+///
+/// Episodes are sorted by publication date (newest first). Episodes without
+/// a publication date are placed at the end, preserving their relative order.
 pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan {
     let total_episodes = episodes.len();
     let mut to_download = Vec::new();
@@ -126,6 +129,15 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
         }
     }
 
+    // Sort episodes by publication date (newest first)
+    // Episodes without pub_date are placed at the end
+    to_download.sort_by(|a, b| match (&b.pub_date, &a.pub_date) {
+        (Some(b_date), Some(a_date)) => b_date.cmp(a_date),
+        (Some(_), None) => std::cmp::Ordering::Greater, // b has date, a doesn't => b comes first
+        (None, Some(_)) => std::cmp::Ordering::Less,    // a has date, b doesn't => a comes first
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
     SyncPlan {
         to_download,
         already_present,
@@ -138,6 +150,7 @@ mod tests {
     use super::*;
     use crate::feed::Enclosure;
     use crate::metadata::write_episode_metadata;
+    use chrono::{DateTime, FixedOffset, TimeZone, Utc};
     use tempfile::tempdir;
     use url::Url;
 
@@ -156,6 +169,33 @@ mod tests {
             episode_number: None,
             season_number: None,
         }
+    }
+
+    fn make_episode_with_date(
+        title: &str,
+        guid: Option<&str>,
+        pub_date: Option<DateTime<FixedOffset>>,
+    ) -> Episode {
+        Episode {
+            title: title.to_string(),
+            description: None,
+            pub_date,
+            guid: guid.map(String::from),
+            enclosure: Enclosure {
+                url: Url::parse("https://example.com/ep.mp3").unwrap(),
+                length: None,
+                mime_type: None,
+            },
+            duration: None,
+            episode_number: None,
+            season_number: None,
+        }
+    }
+
+    fn make_date(year: i32, month: u32, day: u32) -> DateTime<FixedOffset> {
+        Utc.with_ymd_and_hms(year, month, day, 12, 0, 0)
+            .unwrap()
+            .with_timezone(&FixedOffset::east_opt(0).unwrap())
     }
 
     #[test]
@@ -305,5 +345,55 @@ mod tests {
         // Partial files should not be in existing_files
         assert!(!state.existing_files.contains("episode1.mp3.partial"));
         assert!(!state.existing_files.contains("episode2.mp3.partial"));
+    }
+
+    #[test]
+    fn sync_plan_sorts_episodes_by_pub_date_newest_first() {
+        let state = OutputState {
+            downloaded_guids: HashSet::new(),
+            existing_files: HashSet::new(),
+            output_dir: PathBuf::from("/tmp"),
+            partial_files_cleaned: 0,
+        };
+
+        // Create episodes in random order
+        let episodes = vec![
+            make_episode_with_date("Old Episode", Some("guid-1"), Some(make_date(2024, 1, 1))),
+            make_episode_with_date("Newest Episode", Some("guid-2"), Some(make_date(2024, 3, 15))),
+            make_episode_with_date("Middle Episode", Some("guid-3"), Some(make_date(2024, 2, 10))),
+        ];
+
+        let plan = create_sync_plan(episodes, &state);
+
+        // Should be sorted newest first
+        assert_eq!(plan.to_download.len(), 3);
+        assert_eq!(plan.to_download[0].title, "Newest Episode");
+        assert_eq!(plan.to_download[1].title, "Middle Episode");
+        assert_eq!(plan.to_download[2].title, "Old Episode");
+    }
+
+    #[test]
+    fn sync_plan_places_episodes_without_date_at_end() {
+        let state = OutputState {
+            downloaded_guids: HashSet::new(),
+            existing_files: HashSet::new(),
+            output_dir: PathBuf::from("/tmp"),
+            partial_files_cleaned: 0,
+        };
+
+        let episodes = vec![
+            make_episode_with_date("No Date 1", Some("guid-1"), None),
+            make_episode_with_date("With Date", Some("guid-2"), Some(make_date(2024, 1, 15))),
+            make_episode_with_date("No Date 2", Some("guid-3"), None),
+        ];
+
+        let plan = create_sync_plan(episodes, &state);
+
+        // Episode with date should be first, undated ones at the end
+        assert_eq!(plan.to_download.len(), 3);
+        assert_eq!(plan.to_download[0].title, "With Date");
+        // Undated episodes preserve relative order
+        assert_eq!(plan.to_download[1].title, "No Date 1");
+        assert_eq!(plan.to_download[2].title, "No Date 2");
     }
 }
