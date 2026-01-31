@@ -69,11 +69,13 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
         existing_files.insert(filename.clone());
 
         // Read episode metadata files to extract GUIDs
-        if filename.ends_with(".json") && filename != "podcast.json"
+        if filename.ends_with(".json")
+            && filename != "podcast.json"
             && let Ok(metadata) = read_episode_metadata(&path)
-                && let Some(guid) = metadata.guid {
-                    downloaded_guids.insert(guid);
-                }
+            && let Some(guid) = metadata.guid
+        {
+            downloaded_guids.insert(guid);
+        }
     }
 
     Ok(OutputState {
@@ -170,9 +172,11 @@ mod tests {
         let state = scan_output_dir(dir.path()).unwrap();
 
         assert!(state.downloaded_guids.contains("test-guid-123"));
-        assert!(state
-            .existing_files
-            .contains("2024-01-15-test-episode.json"));
+        assert!(
+            state
+                .existing_files
+                .contains("2024-01-15-test-episode.json")
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use url::Url;
 use crate::error::FeedError;
 use crate::http::HttpClient;
 
-use super::parse::{parse_feed, Podcast};
+use super::parse::{Podcast, parse_feed};
 
 /// Fetch and parse a podcast feed from a URL
 pub async fn fetch_feed<C: HttpClient>(client: &C, url: &str) -> Result<Podcast, FeedError> {

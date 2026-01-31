@@ -40,9 +40,10 @@ pub fn get_audio_extension(episode: &Episode) -> String {
 
     // Try to get extension from MIME type
     if let Some(ref mime) = episode.enclosure.mime_type
-        && let Some(ext) = mime_to_extension(mime) {
-            return ext.to_string();
-        }
+        && let Some(ext) = mime_to_extension(mime)
+    {
+        return ext.to_string();
+    }
 
     // Default to mp3
     "mp3".to_string()
@@ -105,9 +106,10 @@ fn truncate_at_boundary(s: &str, max_len: usize) -> String {
     // Find the last separator before max_len
     let truncated: String = s.chars().take(max_len).collect();
     if let Some(pos) = truncated.rfind('-')
-        && pos > max_len / 2 {
-            return truncated[..pos].to_string();
-        }
+        && pos > max_len / 2
+    {
+        return truncated[..pos].to_string();
+    }
 
     truncated.trim_end_matches('-').to_string()
 }
@@ -186,7 +188,10 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_quotes_and_brackets() {
-        assert_eq!(sanitize_title("\"quoted\" <angle> [square]"), "quoted-angle-square");
+        assert_eq!(
+            sanitize_title("\"quoted\" <angle> [square]"),
+            "quoted-angle-square"
+        );
     }
 
     #[test]
@@ -382,15 +387,23 @@ mod tests {
 
     #[test]
     fn mime_m4a_maps_correctly() {
-        let episode =
-            make_episode_with_mime("Test", None, "https://example.com/episode", Some("audio/mp4"));
+        let episode = make_episode_with_mime(
+            "Test",
+            None,
+            "https://example.com/episode",
+            Some("audio/mp4"),
+        );
         assert_eq!(get_audio_extension(&episode), "m4a");
     }
 
     #[test]
     fn mime_ogg_maps_correctly() {
-        let episode =
-            make_episode_with_mime("Test", None, "https://example.com/episode", Some("audio/ogg"));
+        let episode = make_episode_with_mime(
+            "Test",
+            None,
+            "https://example.com/episode",
+            Some("audio/ogg"),
+        );
         assert_eq!(get_audio_extension(&episode), "ogg");
     }
 

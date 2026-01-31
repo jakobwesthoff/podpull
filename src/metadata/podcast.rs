@@ -40,10 +40,7 @@ impl PodcastMetadata {
 }
 
 /// Write podcast metadata to the output directory
-pub fn write_podcast_metadata(
-    podcast: &Podcast,
-    output_dir: &Path,
-) -> Result<(), MetadataError> {
+pub fn write_podcast_metadata(podcast: &Podcast, output_dir: &Path) -> Result<(), MetadataError> {
     let metadata = PodcastMetadata::from_podcast(podcast);
     let path = output_dir.join(PODCAST_METADATA_FILENAME);
 
@@ -66,7 +63,7 @@ pub fn read_podcast_metadata(output_dir: &Path) -> Result<PodcastMetadata, Metad
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use tempfile::tempdir;
     use url::Url;
 

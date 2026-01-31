@@ -34,10 +34,13 @@ pub async fn download_episode<C: HttpClient>(
     let url = episode.enclosure.url.as_str();
 
     // Get streaming response
-    let response = client.get_stream(url).await.map_err(|e| DownloadError::HttpFailed {
-        url: url.to_string(),
-        source: e,
-    })?;
+    let response = client
+        .get_stream(url)
+        .await
+        .map_err(|e| DownloadError::HttpFailed {
+            url: url.to_string(),
+            source: e,
+        })?;
 
     // Check for HTTP errors
     if response.status >= 400 {
@@ -57,12 +60,13 @@ pub async fn download_episode<C: HttpClient>(
     });
 
     // Create output file
-    let mut file = File::create(output_path)
-        .await
-        .map_err(|e| DownloadError::FileCreateFailed {
-            path: output_path.to_path_buf(),
-            source: e,
-        })?;
+    let mut file =
+        File::create(output_path)
+            .await
+            .map_err(|e| DownloadError::FileCreateFailed {
+                path: output_path.to_path_buf(),
+                source: e,
+            })?;
 
     // Stream body to file
     let mut bytes_downloaded: u64 = 0;
@@ -118,7 +122,7 @@ mod tests {
     use crate::progress::NoopReporter;
     use async_trait::async_trait;
     use bytes::Bytes;
-    
+
     use tempfile::tempdir;
     use url::Url;
 
@@ -137,9 +141,8 @@ mod tests {
             let data = self.response_data.clone();
             let len = data.len() as u64;
 
-            let stream: ByteStream = Box::pin(futures::stream::once(async move {
-                Ok(Bytes::from(data))
-            }));
+            let stream: ByteStream =
+                Box::pin(futures::stream::once(async move { Ok(Bytes::from(data)) }));
 
             Ok(HttpResponse {
                 status: self.status,
