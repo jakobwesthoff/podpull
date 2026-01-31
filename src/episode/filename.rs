@@ -77,24 +77,63 @@ fn sanitize_title(title: &str) -> String {
     }
 }
 
-/// Collapse multiple spaces and dashes into single dashes
+/// Collapse consecutive separators of the same type
+///
+/// - Multiple whitespace characters → single space
+/// - Multiple dashes → single dash
+/// - Multiple underscores → single underscore
 fn collapse_separators(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut last_was_separator = false;
+    let mut last_char_type: Option<SeparatorType> = None;
 
     for c in s.chars() {
-        if c == '-' || c.is_whitespace() {
-            if !last_was_separator {
-                result.push('-');
-                last_was_separator = true;
+        let current_type = SeparatorType::from_char(c);
+
+        match current_type {
+            Some(sep_type) => {
+                // Only push if different from last separator type
+                if last_char_type != Some(sep_type) {
+                    result.push(sep_type.canonical_char());
+                    last_char_type = Some(sep_type);
+                }
             }
-        } else {
-            result.push(c);
-            last_was_separator = false;
+            None => {
+                result.push(c);
+                last_char_type = None;
+            }
         }
     }
 
     result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeparatorType {
+    Whitespace,
+    Dash,
+    Underscore,
+}
+
+impl SeparatorType {
+    fn from_char(c: char) -> Option<Self> {
+        if c.is_whitespace() {
+            Some(SeparatorType::Whitespace)
+        } else if c == '-' {
+            Some(SeparatorType::Dash)
+        } else if c == '_' {
+            Some(SeparatorType::Underscore)
+        } else {
+            None
+        }
+    }
+
+    fn canonical_char(self) -> char {
+        match self {
+            SeparatorType::Whitespace => ' ',
+            SeparatorType::Dash => '-',
+            SeparatorType::Underscore => '_',
+        }
+    }
 }
 
 /// Truncate string at a word boundary
@@ -203,18 +242,25 @@ mod tests {
     #[test]
     fn sanitize_preserves_unicode_chars() {
         // Unicode characters are now preserved
-        assert_eq!(sanitize_title("Café résumé"), "Café-résumé");
+        assert_eq!(sanitize_title("Café résumé"), "Café résumé");
     }
 
     #[test]
     fn sanitize_preserves_emoji() {
         // Emoji are valid filename characters on modern systems
-        assert_eq!(sanitize_title("Hello 🎙️ World"), "Hello-🎙️-World");
+        assert_eq!(sanitize_title("Hello 🎙️ World"), "Hello 🎙️ World");
     }
 
     #[test]
-    fn sanitize_collapses_mixed_spaces_and_dashes() {
-        assert_eq!(sanitize_title("a - - - b"), "a-b");
+    fn sanitize_collapses_consecutive_same_type_separators() {
+        // Multiple spaces collapse to single space
+        assert_eq!(sanitize_title("a    b"), "a b");
+        // Multiple dashes collapse to single dash
+        assert_eq!(sanitize_title("a----b"), "a-b");
+        // Multiple underscores collapse to single underscore
+        assert_eq!(sanitize_title("a____b"), "a_b");
+        // Mixed separators are collapsed separately
+        assert_eq!(sanitize_title("a - - b"), "a - - b");
     }
 
     #[test]
@@ -229,7 +275,7 @@ mod tests {
 
     #[test]
     fn sanitize_preserves_numbers() {
-        assert_eq!(sanitize_title("Episode 42"), "Episode-42");
+        assert_eq!(sanitize_title("Episode 42"), "Episode 42");
     }
 
     #[test]
@@ -284,14 +330,14 @@ mod tests {
             "https://example.com/ep.mp3",
         );
 
-        assert_eq!(generate_filename_stem(&episode), "2024-01-15-Test-Episode");
+        assert_eq!(generate_filename_stem(&episode), "2024-01-15-Test Episode");
     }
 
     #[test]
     fn filename_stem_uses_undated_when_no_date() {
         let episode = make_episode("Test Episode", None, "https://example.com/ep.mp3");
 
-        assert_eq!(generate_filename_stem(&episode), "undated-Test-Episode");
+        assert_eq!(generate_filename_stem(&episode), "undated-Test Episode");
     }
 
     #[test]
@@ -322,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn collapses_multiple_spaces_and_dashes() {
+    fn collapses_multiple_spaces() {
         let episode = make_episode(
             "Episode   with   spaces",
             None,
@@ -330,8 +376,8 @@ mod tests {
         );
 
         let stem = generate_filename_stem(&episode);
-        assert!(!stem.contains("--"));
         assert!(!stem.contains("  "));
+        assert!(stem.contains("Episode with spaces"));
     }
 
     #[test]
@@ -453,7 +499,7 @@ mod tests {
             "https://example.com/audio.mp3",
         );
 
-        assert_eq!(generate_filename(&episode), "2024-01-15-My-Episode.mp3");
+        assert_eq!(generate_filename(&episode), "2024-01-15-My Episode.mp3");
     }
 
     #[test]
@@ -464,33 +510,40 @@ mod tests {
             "https://example.com/book.m4a",
         );
 
-        assert_eq!(generate_filename(&episode), "2024-01-16-Audio-Book.m4a");
+        assert_eq!(generate_filename(&episode), "2024-01-16-Audio Book.m4a");
     }
 
     // === Collapse separators tests ===
 
     #[test]
-    fn collapse_single_space() {
-        assert_eq!(collapse_separators("hello world"), "hello-world");
+    fn collapse_single_space_unchanged() {
+        assert_eq!(collapse_separators("hello world"), "hello world");
     }
 
     #[test]
-    fn collapse_multiple_spaces() {
-        assert_eq!(collapse_separators("hello    world"), "hello-world");
+    fn collapse_multiple_spaces_to_single() {
+        assert_eq!(collapse_separators("hello    world"), "hello world");
     }
 
     #[test]
-    fn collapse_multiple_dashes() {
+    fn collapse_multiple_dashes_to_single() {
         assert_eq!(collapse_separators("hello----world"), "hello-world");
     }
 
     #[test]
-    fn collapse_mixed() {
-        assert_eq!(collapse_separators("hello - - world"), "hello-world");
+    fn collapse_multiple_underscores_to_single() {
+        assert_eq!(collapse_separators("hello____world"), "hello_world");
+    }
+
+    #[test]
+    fn collapse_mixed_separators_separately() {
+        // Each separator type is collapsed independently
+        assert_eq!(collapse_separators("hello - - world"), "hello - - world");
+        assert_eq!(collapse_separators("hello  --  world"), "hello - world");
     }
 
     #[test]
     fn collapse_preserves_non_separators() {
-        assert_eq!(collapse_separators("ab cd ef"), "ab-cd-ef");
+        assert_eq!(collapse_separators("ab cd ef"), "ab cd ef");
     }
 }
