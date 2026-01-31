@@ -25,11 +25,13 @@ pub struct EpisodeMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_number: Option<u32>,
     pub audio_filename: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 impl EpisodeMetadata {
     /// Create metadata from a parsed Episode
-    pub fn from_episode(episode: &Episode, audio_filename: &str) -> Self {
+    pub fn from_episode(episode: &Episode, audio_filename: &str, content_hash: Option<String>) -> Self {
         Self {
             title: episode.title.clone(),
             description: episode.description.clone(),
@@ -41,6 +43,7 @@ impl EpisodeMetadata {
             episode_number: episode.episode_number,
             season_number: episode.season_number,
             audio_filename: audio_filename.to_string(),
+            content_hash,
         }
     }
 }
@@ -49,9 +52,10 @@ impl EpisodeMetadata {
 pub fn write_episode_metadata(
     episode: &Episode,
     audio_filename: &str,
+    content_hash: Option<String>,
     path: &Path,
 ) -> Result<(), MetadataError> {
-    let metadata = EpisodeMetadata::from_episode(episode, audio_filename);
+    let metadata = EpisodeMetadata::from_episode(episode, audio_filename, content_hash);
     let json = serde_json::to_string_pretty(&metadata)?;
     std::fs::write(path, json).map_err(|e| MetadataError::WriteFailed {
         path: path.to_path_buf(),
@@ -100,7 +104,7 @@ mod tests {
     #[test]
     fn from_episode_converts_all_fields() {
         let episode = make_episode();
-        let metadata = EpisodeMetadata::from_episode(&episode, "2024-01-15-test-episode.mp3");
+        let metadata = EpisodeMetadata::from_episode(&episode, "2024-01-15-test-episode.mp3", Some("sha256:abc123".to_string()));
 
         assert_eq!(metadata.title, "Test Episode");
         assert_eq!(metadata.description, Some("A test episode".to_string()));
@@ -111,6 +115,7 @@ mod tests {
         assert_eq!(metadata.episode_number, Some(42));
         assert_eq!(metadata.season_number, Some(2));
         assert_eq!(metadata.audio_filename, "2024-01-15-test-episode.mp3");
+        assert_eq!(metadata.content_hash, Some("sha256:abc123".to_string()));
     }
 
     #[test]
@@ -119,12 +124,13 @@ mod tests {
         let episode = make_episode();
         let path = dir.path().join("episode.json");
 
-        write_episode_metadata(&episode, "test.mp3", &path).unwrap();
+        write_episode_metadata(&episode, "test.mp3", Some("sha256:abc123".to_string()), &path).unwrap();
         let read_back = read_episode_metadata(&path).unwrap();
 
         assert_eq!(read_back.title, "Test Episode");
         assert_eq!(read_back.audio_filename, "test.mp3");
         assert_eq!(read_back.guid, Some("test-guid-123".to_string()));
+        assert_eq!(read_back.content_hash, Some("sha256:abc123".to_string()));
     }
 
     #[test]
@@ -152,7 +158,7 @@ mod tests {
             season_number: None,
         };
 
-        let metadata = EpisodeMetadata::from_episode(&episode, "minimal.mp3");
+        let metadata = EpisodeMetadata::from_episode(&episode, "minimal.mp3", None);
 
         assert_eq!(metadata.title, "Minimal Episode");
         assert!(metadata.description.is_none());
@@ -161,5 +167,6 @@ mod tests {
         assert!(metadata.duration.is_none());
         assert!(metadata.episode_number.is_none());
         assert!(metadata.season_number.is_none());
+        assert!(metadata.content_hash.is_none());
     }
 }

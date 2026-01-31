@@ -14,6 +14,8 @@ pub struct OutputState {
     pub existing_files: HashSet<String>,
     /// The output directory path
     pub output_dir: PathBuf,
+    /// Number of partial files that were cleaned up during scan
+    pub partial_files_cleaned: usize,
 }
 
 /// Plan for synchronization, indicating what needs to be downloaded
@@ -30,9 +32,11 @@ pub struct SyncPlan {
 /// Scan the output directory to detect existing downloads
 ///
 /// Reads all .json metadata files to extract GUIDs of already-downloaded episodes.
+/// Also cleans up any `.partial` files from interrupted downloads.
 pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
     let mut downloaded_guids = HashSet::new();
     let mut existing_files = HashSet::new();
+    let mut partial_files_cleaned = 0;
 
     if !output_dir.exists() {
         // Create the directory if it doesn't exist
@@ -45,6 +49,7 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
             downloaded_guids,
             existing_files,
             output_dir: output_dir.to_path_buf(),
+            partial_files_cleaned,
         });
     }
 
@@ -66,6 +71,14 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
             .unwrap_or("")
             .to_string();
 
+        // Clean up partial files from interrupted downloads
+        if filename.ends_with(".partial") {
+            if std::fs::remove_file(&path).is_ok() {
+                partial_files_cleaned += 1;
+            }
+            continue;
+        }
+
         existing_files.insert(filename.clone());
 
         // Read episode metadata files to extract GUIDs
@@ -82,6 +95,7 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
         downloaded_guids,
         existing_files,
         output_dir: output_dir.to_path_buf(),
+        partial_files_cleaned,
     })
 }
 
@@ -147,6 +161,7 @@ mod tests {
 
         assert!(state.downloaded_guids.is_empty());
         assert!(state.existing_files.is_empty());
+        assert_eq!(state.partial_files_cleaned, 0);
     }
 
     #[test]
@@ -167,7 +182,7 @@ mod tests {
 
         // Write episode metadata
         let meta_path = dir.path().join("2024-01-15-test-episode.json");
-        write_episode_metadata(&episode, "2024-01-15-test-episode.mp3", &meta_path).unwrap();
+        write_episode_metadata(&episode, "2024-01-15-test-episode.mp3", None, &meta_path).unwrap();
 
         let state = scan_output_dir(dir.path()).unwrap();
 
@@ -201,6 +216,7 @@ mod tests {
             downloaded_guids: HashSet::new(),
             existing_files: HashSet::new(),
             output_dir: PathBuf::from("/tmp"),
+            partial_files_cleaned: 0,
         };
 
         let episodes = vec![
@@ -224,6 +240,7 @@ mod tests {
             downloaded_guids,
             existing_files: HashSet::new(),
             output_dir: PathBuf::from("/tmp"),
+            partial_files_cleaned: 0,
         };
 
         let episodes = vec![
@@ -248,6 +265,7 @@ mod tests {
             downloaded_guids,
             existing_files: HashSet::new(),
             output_dir: PathBuf::from("/tmp"),
+            partial_files_cleaned: 0,
         };
 
         let episodes = vec![
@@ -259,5 +277,29 @@ mod tests {
 
         assert_eq!(plan.to_download.len(), 1);
         assert_eq!(plan.to_download[0].title, "Ep 2");
+    }
+
+    #[test]
+    fn scan_cleans_up_partial_files() {
+        let dir = tempdir().unwrap();
+
+        // Create some partial files
+        std::fs::write(dir.path().join("episode1.mp3.partial"), b"partial data 1").unwrap();
+        std::fs::write(dir.path().join("episode2.mp3.partial"), b"partial data 2").unwrap();
+        // Create a normal file
+        std::fs::write(dir.path().join("episode3.mp3"), b"complete audio").unwrap();
+
+        let state = scan_output_dir(dir.path()).unwrap();
+
+        // Partial files should have been cleaned up
+        assert_eq!(state.partial_files_cleaned, 2);
+        assert!(!dir.path().join("episode1.mp3.partial").exists());
+        assert!(!dir.path().join("episode2.mp3.partial").exists());
+        // Normal file should still exist
+        assert!(dir.path().join("episode3.mp3").exists());
+        assert!(state.existing_files.contains("episode3.mp3"));
+        // Partial files should not be in existing_files
+        assert!(!state.existing_files.contains("episode1.mp3.partial"));
+        assert!(!state.existing_files.contains("episode2.mp3.partial"));
     }
 }

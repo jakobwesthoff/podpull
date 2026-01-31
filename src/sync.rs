@@ -72,8 +72,15 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         parse_feed_file(Path::new(feed_source))?
     };
 
-    // Scan output directory
+    // Scan output directory (also cleans up any partial files from interrupted downloads)
     let state = scan_output_dir(output_dir)?;
+
+    // Report if any partial files were cleaned up
+    if state.partial_files_cleaned > 0 {
+        reporter.report(ProgressEvent::PartialFilesCleanedUp {
+            count: state.partial_files_cleaned,
+        });
+    }
 
     // Create sync plan
     let plan = create_sync_plan(podcast.episodes.clone(), &state);
@@ -161,9 +168,14 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
                 download_episode(&client, &episode, &audio_path, &context, &reporter).await;
 
             let return_result = match result {
-                Ok(_bytes) => {
-                    // Write episode metadata
-                    if let Err(e) = write_episode_metadata(&episode, &filename, &metadata_path) {
+                Ok(download_result) => {
+                    // Write episode metadata with content hash
+                    if let Err(e) = write_episode_metadata(
+                        &episode,
+                        &filename,
+                        Some(download_result.content_hash),
+                        &metadata_path,
+                    ) {
                         reporter.report(ProgressEvent::DownloadFailed {
                             download_id,
                             episode_title: episode.title.clone(),

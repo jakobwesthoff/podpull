@@ -9,7 +9,7 @@ pub mod sync;
 
 // Re-export main types for convenience
 pub use episode::{
-    DownloadContext, download_episode, generate_filename, generate_filename_stem,
+    DownloadContext, DownloadResult, download_episode, generate_filename, generate_filename_stem,
     get_audio_extension,
 };
 pub use error::{DownloadError, FeedError, MetadataError, StateError, SyncError};

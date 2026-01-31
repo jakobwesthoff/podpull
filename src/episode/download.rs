@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
+use sha2::{Digest, Sha256};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
@@ -20,17 +21,27 @@ pub struct DownloadContext {
     pub total_to_download: usize,
 }
 
+/// Result of a successful download
+#[derive(Debug, Clone)]
+pub struct DownloadResult {
+    /// Number of bytes downloaded
+    pub bytes_downloaded: u64,
+    /// SHA-256 hash of the downloaded content (format: "sha256:...")
+    pub content_hash: String,
+}
+
 /// Download an episode to the specified output path
 ///
-/// Streams the response body to disk, reporting progress through the reporter.
-/// Returns the number of bytes downloaded on success.
+/// Streams the response body to disk while computing a SHA-256 hash.
+/// Downloads to a `.partial` file first, then atomically renames on completion.
+/// Returns a `DownloadResult` containing bytes downloaded and content hash.
 pub async fn download_episode<C: HttpClient>(
     client: &C,
     episode: &Episode,
     output_path: &Path,
     context: &DownloadContext,
     reporter: &SharedProgressReporter,
-) -> Result<u64, DownloadError> {
+) -> Result<DownloadResult, DownloadError> {
     let url = episode.enclosure.url.as_str();
 
     // Get streaming response
@@ -59,16 +70,22 @@ pub async fn download_episode<C: HttpClient>(
         content_length: response.content_length,
     });
 
-    // Create output file
+    // Create partial file path
+    let partial_path = PathBuf::from(format!("{}.partial", output_path.display()));
+
+    // Create partial output file
     let mut file =
-        File::create(output_path)
+        File::create(&partial_path)
             .await
             .map_err(|e| DownloadError::FileCreateFailed {
-                path: output_path.to_path_buf(),
+                path: partial_path.clone(),
                 source: e,
             })?;
 
-    // Stream body to file
+    // Initialize hasher for streaming hash computation
+    let mut hasher = Sha256::new();
+
+    // Stream body to file while computing hash
     let mut bytes_downloaded: u64 = 0;
     let mut stream = response.body;
 
@@ -78,10 +95,13 @@ pub async fn download_episode<C: HttpClient>(
             source: e,
         })?;
 
+        // Update hash with chunk data
+        hasher.update(&chunk);
+
         file.write_all(&chunk)
             .await
             .map_err(|e| DownloadError::FileWriteFailed {
-                path: output_path.to_path_buf(),
+                path: partial_path.clone(),
                 source: e,
             })?;
 
@@ -100,7 +120,32 @@ pub async fn download_episode<C: HttpClient>(
     file.flush()
         .await
         .map_err(|e| DownloadError::FileWriteFailed {
-            path: output_path.to_path_buf(),
+            path: partial_path.clone(),
+            source: e,
+        })?;
+
+    // Finalize hash
+    let content_hash = format!("sha256:{:x}", hasher.finalize());
+
+    // Report hashing completed
+    reporter.report(ProgressEvent::HashingCompleted {
+        download_id: context.download_id,
+        episode_title: episode.title.clone(),
+        hash: content_hash.clone(),
+    });
+
+    // Report finalizing (atomic rename)
+    reporter.report(ProgressEvent::Finalizing {
+        download_id: context.download_id,
+        episode_title: episode.title.clone(),
+    });
+
+    // Atomically rename partial file to final path
+    tokio::fs::rename(&partial_path, output_path)
+        .await
+        .map_err(|e| DownloadError::RenameFailed {
+            partial_path: partial_path.clone(),
+            final_path: output_path.to_path_buf(),
             source: e,
         })?;
 
@@ -111,7 +156,10 @@ pub async fn download_episode<C: HttpClient>(
         bytes_downloaded,
     });
 
-    Ok(bytes_downloaded)
+    Ok(DownloadResult {
+        bytes_downloaded,
+        content_hash,
+    })
 }
 
 #[cfg(test)]
@@ -187,12 +235,15 @@ mod tests {
         };
         let reporter = NoopReporter::shared();
 
-        let bytes = download_episode(&client, &episode, &output_path, &context, &reporter)
+        let result = download_episode(&client, &episode, &output_path, &context, &reporter)
             .await
             .unwrap();
 
-        assert_eq!(bytes, 18); // "test audio content".len()
+        assert_eq!(result.bytes_downloaded, 18); // "test audio content".len()
+        assert!(result.content_hash.starts_with("sha256:"));
         assert!(output_path.exists());
+        // Verify no .partial file remains
+        assert!(!dir.path().join("episode.mp3.partial").exists());
 
         let content = std::fs::read(&output_path).unwrap();
         assert_eq!(content, b"test audio content");
