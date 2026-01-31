@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use chrono::{DateTime, FixedOffset};
+use html_escape::decode_html_entities;
 use url::Url;
 
 use crate::error::FeedError;
@@ -66,10 +67,11 @@ pub fn parse_feed(xml_bytes: &[u8], feed_url: Url) -> Result<Podcast, FeedError>
         .or_else(|| channel.managing_editor().map(String::from));
 
     Ok(Podcast {
-        title: channel.title().to_string(),
-        description: Some(channel.description().to_string()).filter(|s| !s.is_empty()),
+        title: decode_html_entities(channel.title()).into_owned(),
+        description: Some(decode_html_entities(channel.description()).into_owned())
+            .filter(|s| !s.is_empty()),
         link: Url::parse(channel.link()).ok(),
-        author,
+        author: author.map(|a| decode_html_entities(&a).into_owned()),
         image_url,
         feed_url,
         episodes,
@@ -79,7 +81,7 @@ pub fn parse_feed(xml_bytes: &[u8], feed_url: Url) -> Result<Podcast, FeedError>
 fn parse_episode(item: &rss::Item) -> Result<Episode, FeedError> {
     let title = item
         .title()
-        .map(String::from)
+        .map(|t| decode_html_entities(t).into_owned())
         .unwrap_or_else(|| "Untitled Episode".to_string());
 
     let enclosure = item
@@ -105,7 +107,9 @@ fn parse_episode(item: &rss::Item) -> Result<Episode, FeedError> {
 
     Ok(Episode {
         title,
-        description: item.description().map(String::from),
+        description: item
+            .description()
+            .map(|d| decode_html_entities(d).into_owned()),
         pub_date,
         guid,
         enclosure: Enclosure {
@@ -225,5 +229,41 @@ mod tests {
         let feed_url = Url::parse("https://example.com/feed.xml").unwrap();
         let podcast = parse_feed(feed_no_enclosure.as_bytes(), feed_url).unwrap();
         assert!(podcast.episodes.is_empty());
+    }
+
+    #[test]
+    fn parse_feed_decodes_html_entities() {
+        // Uses numeric character references (&#8212; for em dash, &#8230; for ellipsis)
+        // which are valid in XML and decoded by html_escape
+        let feed_with_entities = r#"<?xml version="1.0"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Tom &amp; Jerry&apos;s &quot;Show&quot;</title>
+    <description>A show about &lt;cats&gt; &amp; dogs</description>
+    <itunes:author>Tom &amp; Jerry</itunes:author>
+    <item>
+      <title>Episode: &quot;The Chase&quot; &#8212; Part 1</title>
+      <description>Jerry escapes &amp; Tom chases&#8230;</description>
+      <enclosure url="https://example.com/ep.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>"#;
+
+        let feed_url = Url::parse("https://example.com/feed.xml").unwrap();
+        let podcast = parse_feed(feed_with_entities.as_bytes(), feed_url).unwrap();
+
+        assert_eq!(podcast.title, "Tom & Jerry's \"Show\"");
+        assert_eq!(
+            podcast.description,
+            Some("A show about <cats> & dogs".to_string())
+        );
+        assert_eq!(podcast.author, Some("Tom & Jerry".to_string()));
+
+        let ep = &podcast.episodes[0];
+        assert_eq!(ep.title, "Episode: \"The Chase\" — Part 1");
+        assert_eq!(
+            ep.description,
+            Some("Jerry escapes & Tom chases…".to_string())
+        );
     }
 }
