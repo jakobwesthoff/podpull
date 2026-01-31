@@ -134,11 +134,15 @@ impl ProgressReporter for IndicatifReporter {
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_length(content_length.unwrap_or(0));
                 bar.set_position(0);
+                // Calculate width needed for "[idx/total]" part
+                let index_width =
+                    (episode_index + 1).to_string().len() + total_to_download.to_string().len();
+                let title_width = available_title_width(index_width);
                 bar.set_message(format!(
                     "[{}/{}] {}",
                     (episode_index + 1).to_string().cyan(),
                     total_to_download.to_string().cyan(),
-                    truncate_title(&episode_title, 40)
+                    truncate_title(&episode_title, title_width)
                 ));
             }
 
@@ -162,9 +166,11 @@ impl ProgressReporter for IndicatifReporter {
             } => {
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_position(bytes_downloaded);
+                // No index displayed, so use 0 for index_width calculation
+                let title_width = available_title_width(0);
                 bar.set_message(format!(
                     "{SUCCESS}{}",
-                    truncate_title(&episode_title, 40).green()
+                    truncate_title(&episode_title, title_width).green()
                 ));
                 self.finish_bar(download_id);
             }
@@ -175,9 +181,11 @@ impl ProgressReporter for IndicatifReporter {
                 error,
             } => {
                 let bar = self.get_or_create_bar(download_id);
+                // Reserve space for " - " and some error text (at least 30 chars)
+                let title_width = available_title_width(0).saturating_sub(3 + 30);
                 bar.abandon_with_message(format!(
                     "{FAILURE}{} - {}",
-                    truncate_title(&episode_title, 30).red(),
+                    truncate_title(&episode_title, title_width.max(20)).red(),
                     error.red()
                 ));
                 self.finish_bar(download_id);
@@ -211,6 +219,25 @@ fn truncate_title(title: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &title[..max_len.saturating_sub(3)])
     }
+}
+
+/// Calculate available width for episode title in progress bar
+/// Layout: "  📥 [{bar:30}] XX.XX MiB/XX.XX MiB [idx/total] title"
+fn available_title_width(index_width: usize) -> usize {
+    let term_width = console::Term::stdout().size().1 as usize;
+
+    // Fixed parts:
+    // - "  " prefix: 2
+    // - emoji + space: 4 (📥 + space, accounting for unicode width)
+    // - "[" + "]": 2
+    // - bar: 30
+    // - " ": 1
+    // - bytes display "XX.XX MiB/XX.XX MiB": ~21 (max reasonable)
+    // - " ": 1
+    // - index "[idx/total] ": index_width + 4 brackets/slash + 1 space
+    let fixed_width = 2 + 4 + 2 + 30 + 1 + 21 + 1 + index_width + 4 + 1;
+
+    term_width.saturating_sub(fixed_width).max(20) // minimum 20 chars for title
 }
 
 #[tokio::main]
