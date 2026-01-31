@@ -64,6 +64,14 @@ pub enum DownloadError {
         #[source]
         source: reqwest::Error,
     },
+
+    #[error("Failed to rename {partial_path} to {final_path}: {source}")]
+    RenameFailed {
+        partial_path: PathBuf,
+        final_path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Errors that can occur during metadata operations
