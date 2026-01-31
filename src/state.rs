@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::error::StateError;
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
+use crate::progress::{ProgressEvent, SharedProgressReporter};
 
 /// State of the output directory, tracking already-downloaded episodes
 #[derive(Debug, Clone)]
@@ -37,7 +38,10 @@ pub struct SyncPlan {
 ///
 /// Reads all .json metadata files to extract GUIDs of already-downloaded episodes.
 /// Also cleans up any `.partial` files from interrupted downloads.
-pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
+pub fn scan_output_dir(
+    output_dir: &Path,
+    reporter: &SharedProgressReporter,
+) -> Result<OutputState, StateError> {
     let mut downloaded_guids = HashSet::new();
     let mut existing_files = HashSet::new();
     let mut partial_files_cleaned = 0;
@@ -49,6 +53,11 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
             source: e,
         })?;
 
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: 0,
+            total_files: 0,
+        });
+
         return Ok(OutputState {
             downloaded_guids,
             existing_files,
@@ -57,10 +66,17 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
         });
     }
 
-    let entries = std::fs::read_dir(output_dir).map_err(|e| StateError::ReadDirectoryFailed {
-        path: output_dir.to_path_buf(),
-        source: e,
-    })?;
+    // Collect entries first (single network traversal)
+    let entries: Vec<_> = std::fs::read_dir(output_dir)
+        .map_err(|e| StateError::ReadDirectoryFailed {
+            path: output_dir.to_path_buf(),
+            source: e,
+        })?
+        .collect();
+
+    // Categorize entries - this is fast (just filename checks, no I/O)
+    let mut partial_files = Vec::new();
+    let mut json_files = Vec::new();
 
     for entry in entries {
         let entry = entry.map_err(|e| StateError::ReadDirectoryFailed {
@@ -75,24 +91,43 @@ pub fn scan_output_dir(output_dir: &Path) -> Result<OutputState, StateError> {
             .unwrap_or("")
             .to_string();
 
-        // Clean up partial files from interrupted downloads
         if filename.ends_with(".partial") {
-            if std::fs::remove_file(&path).is_ok() {
-                partial_files_cleaned += 1;
+            partial_files.push(path);
+        } else {
+            existing_files.insert(filename.clone());
+
+            if filename.ends_with(".json") && filename != "podcast.json" {
+                json_files.push(path);
             }
-            continue;
         }
+    }
 
-        existing_files.insert(filename.clone());
+    // Clean up partial files (fast local operation)
+    for path in partial_files {
+        if std::fs::remove_file(&path).is_ok() {
+            partial_files_cleaned += 1;
+        }
+    }
 
-        // Read episode metadata files to extract GUIDs
-        if filename.ends_with(".json")
-            && filename != "podcast.json"
-            && let Ok(metadata) = read_episode_metadata(&path)
+    // Process JSON metadata files with progress (this is the slow part on network shares)
+    let total_json_files = json_files.len();
+
+    reporter.report(ProgressEvent::ScanningDirectory {
+        files_scanned: 0,
+        total_files: total_json_files,
+    });
+
+    for (index, path) in json_files.into_iter().enumerate() {
+        if let Ok(metadata) = read_episode_metadata(&path)
             && let Some(guid) = metadata.guid
         {
             downloaded_guids.insert(guid);
         }
+
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: index + 1,
+            total_files: total_json_files,
+        });
     }
 
     Ok(OutputState {
@@ -150,6 +185,7 @@ mod tests {
     use super::*;
     use crate::feed::Enclosure;
     use crate::metadata::write_episode_metadata;
+    use crate::progress::NoopReporter;
     use chrono::{DateTime, FixedOffset, TimeZone, Utc};
     use tempfile::tempdir;
     use url::Url;
@@ -201,7 +237,8 @@ mod tests {
     #[test]
     fn scan_empty_dir_returns_empty_state() {
         let dir = tempdir().unwrap();
-        let state = scan_output_dir(dir.path()).unwrap();
+        let reporter = NoopReporter::shared();
+        let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         assert!(state.downloaded_guids.is_empty());
         assert!(state.existing_files.is_empty());
@@ -212,9 +249,10 @@ mod tests {
     fn scan_creates_nonexistent_dir() {
         let dir = tempdir().unwrap();
         let output_dir = dir.path().join("new_podcast");
+        let reporter = NoopReporter::shared();
 
         assert!(!output_dir.exists());
-        let state = scan_output_dir(&output_dir).unwrap();
+        let state = scan_output_dir(&output_dir, &reporter).unwrap();
         assert!(output_dir.exists());
         assert!(state.downloaded_guids.is_empty());
     }
@@ -228,7 +266,8 @@ mod tests {
         let meta_path = dir.path().join("2024-01-15-test-episode.json");
         write_episode_metadata(&episode, "2024-01-15-test-episode.mp3", None, &meta_path).unwrap();
 
-        let state = scan_output_dir(dir.path()).unwrap();
+        let reporter = NoopReporter::shared();
+        let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         assert!(state.downloaded_guids.contains("test-guid-123"));
         assert!(
@@ -247,7 +286,8 @@ mod tests {
         )
         .unwrap();
 
-        let state = scan_output_dir(dir.path()).unwrap();
+        let reporter = NoopReporter::shared();
+        let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         // podcast.json should be in existing_files but not affect downloaded_guids
         assert!(state.existing_files.contains("podcast.json"));
@@ -333,7 +373,8 @@ mod tests {
         // Create a normal file
         std::fs::write(dir.path().join("episode3.mp3"), b"complete audio").unwrap();
 
-        let state = scan_output_dir(dir.path()).unwrap();
+        let reporter = NoopReporter::shared();
+        let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         // Partial files should have been cleaned up
         assert_eq!(state.partial_files_cleaned, 2);

@@ -19,6 +19,8 @@ use podpull::{
 
 // Emoji with fallback for terminals without Unicode support
 static MICROPHONE: Emoji<'_, '_> = Emoji("🎙️  ", "");
+static GLOBE: Emoji<'_, '_> = Emoji("🌐 ", "[w] ");
+static COG: Emoji<'_, '_> = Emoji("⚙️  ", "[*] ");
 static SEARCH: Emoji<'_, '_> = Emoji("🔍 ", "[~] ");
 static HEADPHONES: Emoji<'_, '_> = Emoji("🎧 ", "[i] ");
 static SAVING: Emoji<'_, '_> = Emoji("💾 ", "[v] ");
@@ -113,15 +115,48 @@ impl ProgressReporter for IndicatifReporter {
         match event {
             ProgressEvent::FetchingFeed { url } => {
                 self.main_bar
-                    .set_message(format!("{SEARCH}Fetching feed: {}", url.cyan()));
+                    .set_message(format!("{GLOBE}Fetching feed: {}", url.cyan()));
             }
 
-            ProgressEvent::FeedParsed {
+            ProgressEvent::ParsingFeed { source } => {
+                self.main_bar
+                    .set_message(format!("{COG}Parsing feed: {}", source.cyan()));
+            }
+
+            ProgressEvent::ScanningDirectory {
+                files_scanned,
+                total_files,
+            } => {
+                if total_files == 0 {
+                    self.main_bar
+                        .set_message(format!("{SEARCH}Scanning existing episodes..."));
+                } else {
+                    // Switch to progress bar style for scanning
+                    if files_scanned == 0 {
+                        let scan_style = ProgressStyle::default_bar()
+                            .template(&format!(
+                                "{{spinner:.green}} {SEARCH}Scanning existing episodes... [{{bar:30.cyan/blue}}] {{pos}}/{{len}}"
+                            ))
+                            .unwrap()
+                            .progress_chars("█▓░");
+                        self.main_bar.set_style(scan_style);
+                        self.main_bar.set_length(total_files as u64);
+                    }
+                    self.main_bar.set_position(files_scanned as u64);
+                }
+            }
+
+            ProgressEvent::SyncPlanReady {
                 podcast_title,
                 total_episodes,
                 new_episodes,
                 to_download,
             } => {
+                // Reset to spinner style after scanning
+                let main_style = ProgressStyle::default_bar()
+                    .template("{spinner:.green} {wide_msg}")
+                    .unwrap();
+                self.main_bar.set_style(main_style);
                 if new_episodes == to_download {
                     // No limit applied or limit >= new
                     self.main_bar.set_message(format!(

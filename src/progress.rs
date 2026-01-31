@@ -7,11 +7,25 @@ use std::sync::Arc;
 /// Events emitted during podcast synchronization for progress reporting
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
-    /// Feed is being fetched from URL
+    /// Feed is being fetched from URL (network request)
     FetchingFeed { url: String },
 
-    /// Feed has been parsed successfully
-    FeedParsed {
+    /// Feed is being parsed (XML processing)
+    ParsingFeed {
+        /// Source being parsed (URL or file path)
+        source: String,
+    },
+
+    /// Output directory is being scanned for existing episodes
+    ScanningDirectory {
+        /// Number of files scanned so far
+        files_scanned: usize,
+        /// Total number of files to scan
+        total_files: usize,
+    },
+
+    /// Sync plan is ready (feed parsed, directory scanned, plan created)
+    SyncPlanReady {
         podcast_title: String,
         total_episodes: usize,
         /// All episodes not yet downloaded
@@ -129,7 +143,16 @@ mod tests {
             url: "https://example.com/feed.xml".to_string(),
         });
 
-        reporter.report(ProgressEvent::FeedParsed {
+        reporter.report(ProgressEvent::ParsingFeed {
+            source: "https://example.com/feed.xml".to_string(),
+        });
+
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: 5,
+            total_files: 10,
+        });
+
+        reporter.report(ProgressEvent::SyncPlanReady {
             podcast_title: "Test Podcast".to_string(),
             total_episodes: 10,
             new_episodes: 5,

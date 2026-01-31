@@ -17,7 +17,10 @@ pub use episode::{
     get_audio_extension,
 };
 pub use error::{DownloadError, FeedError, MetadataError, StateError, SyncError};
-pub use feed::{Enclosure, Episode, Podcast, fetch_feed, is_url, parse_feed, parse_feed_file};
+pub use feed::{
+    Enclosure, Episode, Podcast, fetch_feed, fetch_feed_bytes, file_path_to_url, is_url,
+    parse_feed, parse_feed_file, read_feed_file,
+};
 pub use http::{HttpClient, HttpResponse, ReqwestClient};
 pub use metadata::{
     EpisodeMetadata, PodcastMetadata, read_episode_metadata, read_podcast_metadata,

@@ -8,9 +8,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Mutex;
 
+use url::Url;
+
 use crate::episode::{DownloadContext, download_episode, generate_filename};
-use crate::error::SyncError;
-use crate::feed::{fetch_feed, is_url, parse_feed_file};
+use crate::error::{FeedError, SyncError};
+use crate::feed::{fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file};
 use crate::http::HttpClient;
 use crate::metadata::{write_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
@@ -65,19 +67,36 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     options: &SyncOptions,
     reporter: SharedProgressReporter,
 ) -> Result<SyncResult, SyncError> {
-    // Fetch and parse feed
-    reporter.report(ProgressEvent::FetchingFeed {
-        url: feed_source.to_string(),
-    });
-
+    // Fetch and parse feed with granular progress reporting
     let podcast = if is_url(feed_source) {
-        fetch_feed(client, feed_source).await?
+        // For URLs: report fetching, then parsing
+        reporter.report(ProgressEvent::FetchingFeed {
+            url: feed_source.to_string(),
+        });
+
+        let bytes = fetch_feed_bytes(client, feed_source).await?;
+
+        reporter.report(ProgressEvent::ParsingFeed {
+            source: feed_source.to_string(),
+        });
+
+        let feed_url =
+            Url::parse(feed_source).map_err(|e| SyncError::Feed(FeedError::InvalidUrl(e)))?;
+        parse_feed(&bytes, feed_url)?
     } else {
-        parse_feed_file(Path::new(feed_source))?
+        // For local files: skip "Fetching" and go straight to parsing
+        reporter.report(ProgressEvent::ParsingFeed {
+            source: feed_source.to_string(),
+        });
+
+        let bytes = read_feed_file(Path::new(feed_source))?;
+        let feed_url = file_path_to_url(Path::new(feed_source));
+        parse_feed(&bytes, feed_url)?
     };
 
     // Scan output directory (also cleans up any partial files from interrupted downloads)
-    let state = scan_output_dir(output_dir)?;
+    // Progress is reported from within scan_output_dir
+    let state = scan_output_dir(output_dir, &reporter)?;
 
     // Report if any partial files were cleaned up
     if state.partial_files_cleaned > 0 {
@@ -103,7 +122,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let existing = plan.already_present.len();
     let limited = new_episodes_count.saturating_sub(total_to_download);
 
-    reporter.report(ProgressEvent::FeedParsed {
+    reporter.report(ProgressEvent::SyncPlanReady {
         podcast_title: podcast.title.clone(),
         total_episodes: plan.total_episodes,
         new_episodes: new_episodes_count,
