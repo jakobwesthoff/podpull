@@ -4,6 +4,7 @@ pub mod feed;
 pub mod http;
 pub mod metadata;
 pub mod progress;
+pub mod state;
 
 // Re-export main types for convenience
 pub use episode::{generate_filename, generate_filename_stem, get_audio_extension};
@@ -15,3 +16,4 @@ pub use metadata::{
     EpisodeMetadata, PodcastMetadata,
 };
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
+pub use state::{create_sync_plan, scan_output_dir, OutputState, SyncPlan};
