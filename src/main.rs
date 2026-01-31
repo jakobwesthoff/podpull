@@ -17,12 +17,13 @@ use podpull::{
 static MICROPHONE: Emoji<'_, '_> = Emoji("🎙️  ", "");
 static SEARCH: Emoji<'_, '_> = Emoji("🔍 ", "[~] ");
 static HEADPHONES: Emoji<'_, '_> = Emoji("🎧 ", "[i] ");
-static DOWNLOAD: Emoji<'_, '_> = Emoji("📥 ", "[v] ");
+static SAVING: Emoji<'_, '_> = Emoji("💾 ", "[v] ");
 static SUCCESS: Emoji<'_, '_> = Emoji("✅ ", "[+] ");
 static FAILURE: Emoji<'_, '_> = Emoji("❌ ", "[!] ");
 static PARTY: Emoji<'_, '_> = Emoji("🎉 ", "[*] ");
 static FOLDER: Emoji<'_, '_> = Emoji("📁 ", "");
 static CROSS: Emoji<'_, '_> = Emoji("✗ ", "x ");
+static BROOM: Emoji<'_, '_> = Emoji("🧹 ", "[c] ");
 
 /// Download and synchronize podcasts from RSS feeds
 #[derive(Parser, Debug)]
@@ -84,7 +85,7 @@ impl IndicatifReporter {
 
         let style = ProgressStyle::default_bar()
             .template(&format!(
-                "  {DOWNLOAD}[{{bar:30.cyan/blue}}] {{bytes}}/{{total_bytes}} {{wide_msg}}"
+                "  {SAVING}[{{bar:30.cyan/blue}}] {{bytes}}/{{total_bytes}} {{wide_msg}}"
             ))
             .unwrap()
             .progress_chars("█▓░");
@@ -189,6 +190,24 @@ impl ProgressReporter for IndicatifReporter {
                     error.red()
                 ));
                 self.finish_bar(download_id);
+            }
+
+            ProgressEvent::Finalizing { .. } => {
+                // Silent - the rename is fast
+            }
+
+            ProgressEvent::HashingCompleted { .. } => {
+                // Silent - hashing happens during download
+            }
+
+            ProgressEvent::PartialFilesCleanedUp { count } => {
+                if count > 0 {
+                    self.main_bar.set_message(format!(
+                        "{BROOM}Cleaned up {} interrupted download{}",
+                        count.to_string().yellow(),
+                        if count == 1 { "" } else { "s" }
+                    ));
+                }
             }
 
             ProgressEvent::SyncCompleted {
