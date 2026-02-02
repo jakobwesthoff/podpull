@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>podpull - Download and sync podcasts from RSS feeds</title>
+  <meta name="description" content="A fast, minimal CLI tool for downloading and synchronizing podcasts from RSS feeds. No cloud services, no accounts, no databases.">
+
+  <!-- Prism.js syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/themes/prism-tomorrow.min.css" integrity="sha512-vswe+cgvic/XBoF1OcM/TeJ2FW0OofqAVdCZiEYkd6dwGXthvkSFWOoGGJgS2CW70VK5dQM5Oh+7ne47s74VTg==" crossorigin="anonymous" referrerpolicy="no-referrer">
+
+  <!-- CSS imports in dependency order -->
+  <link rel="stylesheet" href="styles/theme.css">
+  <link rel="stylesheet" href="styles/base.css">
+  <link rel="stylesheet" href="styles/components.css">
+  <link rel="stylesheet" href="styles/utilities.css">
+  <link rel="stylesheet" href="styles/layout.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="navbar">
+    <div class="container navbar-inner">
+      <a href="#" class="navbar-brand">
+        <span>podpull</span>
+      </a>
+
+      <ul class="navbar-nav">
+        <li><a href="#demo">Demo</a></li>
+        <li><a href="#quickstart">Quick Start</a></li>
+        <li><a href="#docs">Documentation</a></li>
+      </ul>
+
+      <div class="navbar-actions">
+        <a href="https://github.com/jakobwesthoff/podpull" class="btn btn-secondary btn-sm">
+          <svg class="icon-github" viewBox="0 0 24 24">
+            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+          </svg>
+          GitHub
+        </a>
+        <a href="#quickstart" class="btn btn-primary btn-sm">
+          <svg class="icon-download" viewBox="0 0 24 24">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Quick Start
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="container">
+        <h1>podpull</h1>
+        <p class="hero-tagline">
+          A fast, minimal CLI tool for downloading and synchronizing podcasts from RSS feeds. No cloud services, no accounts, no databases — just your podcasts, stored locally, under your control.
+        </p>
+        <div class="hero-actions">
+          <a href="#quickstart" class="btn btn-primary btn-lg">
+            <svg class="icon-download" viewBox="0 0 24 24">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Quick Start
+          </a>
+          <a href="https://github.com/jakobwesthoff/podpull" class="btn btn-secondary btn-lg">
+            <svg class="icon-github" viewBox="0 0 24 24">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            View on GitHub
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Highlights - key value props, no section title -->
+    <section id="features" class="highlights">
+      <div class="container">
+        <div class="highlights-grid">
+          <div class="highlight">
+            <h3>No Database, No Config</h3>
+            <p>The output directory IS the state. No hidden files, no databases. Just look at your folder to see what you have.</p>
+          </div>
+          <div class="highlight">
+            <h3>Smart Sync</h3>
+            <p>Only downloads what's missing. Episodes identified by GUID — run it repeatedly and only new episodes are fetched.</p>
+          </div>
+          <div class="highlight">
+            <h3>Fast & Concurrent</h3>
+            <p>Parallel downloads with configurable concurrency. Atomic writes with SHA-256 integrity verification.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Demo Section -->
+    <section id="demo" class="demo">
+      <div class="container">
+        <div class="demo-window">
+          <div class="macos-window">
+            <div class="macos-window-titlebar">
+              <div class="macos-window-buttons">
+                <span class="macos-window-button close"></span>
+                <span class="macos-window-button minimize"></span>
+                <span class="macos-window-button maximize"></span>
+              </div>
+              <span class="macos-window-title">Terminal</span>
+            </div>
+            <div class="macos-window-content">
+              <video autoplay loop muted playsinline>
+                <source src="assets/demo.webm" type="video/webm">
+                <source src="assets/demo.mp4" type="video/mp4">
+                <!-- Fallback for browsers that don't support video -->
+                <div class="code-block" style="margin: 0; border: none; border-radius: 0;">
+                  <pre><code class="language-bash">$ podpull --help
+Usage: podpull [OPTIONS] &lt;feed&gt; &lt;output-dir&gt;
+
+Arguments:
+  &lt;feed&gt;        RSS feed URL or path to local file
+  &lt;output-dir&gt;  Directory for downloaded episodes
+
+Options:
+  -c, --concurrent &lt;N&gt;  Max concurrent downloads [default: 3]
+  -l, --limit &lt;N&gt;       Only download N most recent episodes
+  -q, --quiet           Suppress progress output
+  -h, --help            Print help
+  -V, --version         Print version</code></pre>
+                </div>
+              </video>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section id="quickstart" class="quickstart">
+      <div class="container">
+        <div class="quickstart-content">
+          <h2>Quick Start</h2>
+
+          <div class="tabs">
+            <div class="tab-buttons">
+              <button class="tab-button active" data-tab="cargo">Cargo (Recommended)</button>
+              <button class="tab-button" data-tab="binary">Binary Releases</button>
+              <button class="tab-button" data-tab="source">From Source</button>
+            </div>
+            <div class="tab-panels">
+              <div class="tab-panel active" data-tab="cargo">
+                <div class="code-block">
+                  <pre><code class="language-bash">cargo install podpull</code></pre>
+                </div>
+                <div style="padding: var(--space-md) var(--space-lg); border-top: 1px solid var(--color-border);">
+                  <p style="margin: 0; color: var(--color-text-muted);">
+                    Available on <a href="https://crates.io/crates/podpull" style="color: var(--color-primary);">crates.io</a>
+                  </p>
+                </div>
+              </div>
+              <div class="tab-panel" data-tab="binary">
+                <div style="padding: var(--space-lg); background-color: var(--color-bg-code);">
+                  <p style="margin: 0 0 1rem 0;">Download pre-built binaries from GitHub Releases:</p>
+                  <a href="https://github.com/jakobwesthoff/podpull/releases" class="btn btn-primary">
+                    <svg class="icon-download" viewBox="0 0 24 24">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    View Releases
+                  </a>
+                </div>
+              </div>
+              <div class="tab-panel" data-tab="source">
+                <div class="code-block">
+                  <pre><code class="language-bash">git clone https://github.com/jakobwesthoff/podpull.git
+cd podpull
+cargo build --release</code></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <h3>Basic Usage</h3>
+          <div class="code-block">
+            <pre><code class="language-bash"># Download a podcast
+podpull https://example.com/podcast/feed.xml ~/Podcasts/my-show/
+
+# Sync new episodes (already downloaded ones are skipped)
+podpull https://example.com/podcast/feed.xml ~/Podcasts/my-show/
+
+# Download faster with more connections
+podpull -c 5 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+
+# Gradually download a large back-catalog
+podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Documentation Section -->
+    <section id="docs" class="docs">
+      <div class="container">
+        <div class="docs-content">
+          <h2>Documentation</h2>
+
+          <h3>CLI Options</h3>
+          <div class="docs-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Option</th>
+                  <th>Default</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>&lt;feed&gt;</code></td>
+                  <td>Required</td>
+                  <td>RSS feed URL or path to local file</td>
+                </tr>
+                <tr>
+                  <td><code>&lt;output-dir&gt;</code></td>
+                  <td>Required</td>
+                  <td>Directory for downloaded episodes</td>
+                </tr>
+                <tr>
+                  <td><code>-c, --concurrent &lt;N&gt;</code></td>
+                  <td>3</td>
+                  <td>Maximum concurrent downloads</td>
+                </tr>
+                <tr>
+                  <td><code>-l, --limit &lt;N&gt;</code></td>
+                  <td>—</td>
+                  <td>Only download the N most recent undownloaded episodes</td>
+                </tr>
+                <tr>
+                  <td><code>-q, --quiet</code></td>
+                  <td>—</td>
+                  <td>Suppress progress output</td>
+                </tr>
+                <tr>
+                  <td><code>-h, --help</code></td>
+                  <td>—</td>
+                  <td>Print help</td>
+                </tr>
+                <tr>
+                  <td><code>-V, --version</code></td>
+                  <td>—</td>
+                  <td>Print version</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Output Structure</h3>
+          <p>
+            Each podcast gets its own directory containing the audio files and metadata:
+          </p>
+          <div class="code-block">
+            <pre><code class="language-bash">~/Podcasts/my-show/
+├── podcast.json                      # Feed metadata
+├── 2024-01-15-episode-title.mp3      # Audio file
+├── 2024-01-15-episode-title.json     # Episode metadata
+├── 2024-01-08-another-episode.mp3
+└── 2024-01-08-another-episode.json</code></pre>
+          </div>
+
+          <h3>Metadata Format</h3>
+          <p>
+            Feed-level metadata in <code>podcast.json</code>:
+          </p>
+          <div class="code-block">
+            <pre><code class="language-json">{
+  "title": "My Favorite Podcast",
+  "description": "A podcast about interesting things",
+  "author": "Podcast Author",
+  "link": "https://example.com/podcast",
+  "feed_url": "https://example.com/podcast/feed.xml",
+  "last_synced": "2024-01-15T10:30:00Z"
+}</code></pre>
+          </div>
+          <p>
+            Episode metadata alongside each audio file:
+          </p>
+          <div class="code-block">
+            <pre><code class="language-json">{
+  "guid": "episode-unique-id-123",
+  "title": "Episode Title",
+  "published": "2024-01-15T08:00:00Z",
+  "url": "https://example.com/episode.mp3",
+  "content_hash": "sha256:abc123...",
+  "downloaded_at": "2024-01-15T10:30:00Z"
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-content">
+        <p class="footer-tagline">Your podcasts, safely backed up</p>
+        <p class="footer-credit">
+          Made with <span class="footer-heart">&hearts;</span> by
+          <a href="https://westhoffswelt.de">Jakob Westhoff</a> |
+          <a href="https://crates.io/crates/podpull">crates.io</a> |
+          <a href="imprint.html">Imprint/Impressum</a>
+        </p>
+      </div>
+    </div>
+  </footer>
+  <!-- Prism.js syntax highlighting -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/prism.min.js" integrity="sha512-HiD3V4nv8fcjtouznjT9TqDNDm1EXngV331YGbfVGeKUoH+OLkRTCMzA34ecjlgSQZpdHZupdSrqHY+Hz3l6uQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-bash.min.js" integrity="sha512-whYhDwtTmlC/NpZlCr6PSsAaLOrfjVg/iXAnC4H/dtiHawpShhT2SlIMbpIhT/IL/NrpdMm+Hq2C13+VKpHTYw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-json.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+  <!-- Tab switching -->
+  <script>
+    document.querySelectorAll('.tab-button').forEach(button => {
+      button.addEventListener('click', () => {
+        const tab = button.dataset.tab;
+        const tabs = button.closest('.tabs');
+        tabs.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+        tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        button.classList.add('active');
+        tabs.querySelector(`.tab-panel[data-tab="${tab}"]`).classList.add('active');
+      });
+    });
+
+    // Scroll spy for navbar
+    const sections = document.querySelectorAll('section[id]');
+    const navLinks = document.querySelectorAll('.navbar-nav a');
+    const navbar = document.querySelector('.navbar');
+    // Extra 16px buffer makes sections activate slightly early for snappier feel
+    const navOffset = navbar.offsetHeight + 16;
+
+    function updateActiveNav() {
+      const scrollPos = window.scrollY + navOffset;
+      let currentSection = null;
+
+      sections.forEach(section => {
+        const top = section.offsetTop;
+        const height = section.offsetHeight;
+
+        if (scrollPos >= top && scrollPos < top + height) {
+          currentSection = section.getAttribute('id');
+        }
+      });
+
+      navLinks.forEach(link => {
+        link.classList.remove('active');
+        if (currentSection && link.getAttribute('href') === `#${currentSection}`) {
+          link.classList.add('active');
+        }
+      });
+    }
+
+    window.addEventListener('scroll', updateActiveNav);
+    updateActiveNav();
+  </script>
+</body>
+</html>
