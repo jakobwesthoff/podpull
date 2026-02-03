@@ -269,8 +269,15 @@
   color: var(--color-text-muted);
 }
 
+.docs .code-block + p,
+.docs .code-block + h3,
+.docs .code-block + h4 {
+  margin-top: var(--space-lg);
+}
+
 .docs-table {
   margin-top: var(--space-md);
+  margin-bottom: var(--space-lg);
   background-color: var(--color-bg-card);
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius);

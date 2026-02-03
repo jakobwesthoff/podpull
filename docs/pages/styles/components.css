@@ -145,6 +145,19 @@ code[class*="language-"] {
   border-radius: 0;
 }
 
+@media (max-width: 640px) {
+  .tab-buttons {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .tab-button {
+    width: 100%;
+    text-align: center;
+  }
+}
+
 /* Feature Box */
 .feature-box {
   background-color: var(--color-bg-card);
@@ -265,4 +278,56 @@ code[class*="language-"] {
   stroke-linecap: round;
   stroke-linejoin: round;
   vertical-align: middle;
+}
+
+/* Callout Box - for important notices, tips, warnings */
+.callout-box {
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--border-radius);
+  padding: var(--space-lg);
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+
+.callout-box h4 {
+  color: var(--color-primary);
+  margin: 0 0 var(--space-sm) 0;
+  font-size: 1rem;
+}
+
+.callout-box p {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.callout-box p.muted {
+  margin-top: var(--space-sm);
+  color: var(--color-text-muted);
+}
+
+.callout-box ul {
+  margin: var(--space-sm) 0 0 0;
+  padding-left: var(--space-lg);
+  color: var(--color-text);
+}
+
+.callout-box li {
+  margin-bottom: var(--space-xs);
+}
+
+.callout-box code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+}
+
+/* Callout variant: Warning */
+.callout-warning {
+  background: var(--color-warning-subtle);
+  border-color: var(--color-warning);
+}
+
+.callout-warning h4 {
+  color: var(--color-warning);
 }

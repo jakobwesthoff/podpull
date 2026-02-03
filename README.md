@@ -36,6 +36,14 @@ No database. No config files. No hidden state. podpull looks at what's already i
 
 Episodes are identified by their GUID from the RSS feed. If an episode file exists with a matching GUID in its metadata, it won't be downloaded again.
 
+### Safe Downloads
+
+podpull uses atomic downloads to ensure file integrity:
+- Episodes download to a temporary `.partial` file first
+- A SHA-256 hash is computed during download
+- Only on successful completion is the file renamed to its final name
+- If interrupted, `.partial` files are automatically cleaned up on the next sync
+
 ## Usage
 
 ```
@@ -136,11 +144,20 @@ Podcasts disappear. Feeds go offline. Hosting changes. Episodes get pulled. If y
 
 podpull makes that easy — point it at a feed, run it periodically (cron job, anyone?), and rest easy knowing your favorite shows are safely backed up.
 
+## Exit Codes
+
+| Exit Code | Meaning |
+|-----------|---------|
+| `0` | Success (episodes downloaded or already up to date) |
+| `1` | Failure (no episodes downloaded and at least one failure occurred) |
+
 ## Limitations
 
 **Episodes without GUIDs:** Some RSS feeds don't include GUIDs for episodes. In this case, podpull uses the episode's download URL as a fallback identifier. This works fine unless the podcast host changes URLs (CDN migrations, hosting changes, etc.) — then those episodes will be re-downloaded since they appear as "new" episodes with different identifiers.
 
 **Feed quirks:** RSS is a "standard" in the same way that HTML was a standard in 2003 — everyone does it slightly differently. podpull handles the common cases and iTunes podcast extensions, but exotic feeds might not parse perfectly.
+
+**Error Handling:** When individual episodes fail to download, podpull continues with the remaining episodes and reports failures at the end.
 
 ## Development
 

@@ -6,6 +6,9 @@
   <title>podpull - Download and sync podcasts from RSS feeds</title>
   <meta name="description" content="A fast, minimal CLI tool for downloading and synchronizing podcasts from RSS feeds. No cloud services, no accounts, no databases.">
 
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+
   <!-- Prism.js syntax highlighting -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/themes/prism-tomorrow.min.css" integrity="sha512-vswe+cgvic/XBoF1OcM/TeJ2FW0OofqAVdCZiEYkd6dwGXthvkSFWOoGGJgS2CW70VK5dQM5Oh+7ne47s74VTg==" crossorigin="anonymous" referrerpolicy="no-referrer">
 
@@ -206,6 +209,13 @@ podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/</code></
         <div class="docs-content">
           <h2>Documentation</h2>
 
+          <p>
+            podpull downloads podcast episodes based on a feed URL. Point it at an RSS feed and specify what to download &mdash; it handles the rest.
+          </p>
+          <div class="code-block">
+            <pre><code class="language-bash">podpull &lt;FEED_URL&gt; [OPTIONS]</code></pre>
+          </div>
+
           <h3>CLI Options</h3>
           <div class="docs-table">
             <table class="table">
@@ -296,6 +306,155 @@ podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/</code></
   "downloaded_at": "2024-01-15T10:30:00Z"
 }</code></pre>
           </div>
+
+          <!-- How It Works -->
+          <h3>How It Works</h3>
+          <p>
+            podpull follows a 4-phase sync process:
+          </p>
+          <div class="docs-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Phase</th>
+                  <th>What Happens</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>1. Fetching</strong></td>
+                  <td>Downloads the RSS feed from the URL (or reads a local file)</td>
+                </tr>
+                <tr>
+                  <td><strong>2. Parsing</strong></td>
+                  <td>Extracts podcast metadata and episode list from the feed</td>
+                </tr>
+                <tr>
+                  <td><strong>3. Scanning</strong></td>
+                  <td>Reads existing episode metadata from the output directory to determine what's already downloaded</td>
+                </tr>
+                <tr>
+                  <td><strong>4. Downloading</strong></td>
+                  <td>Downloads missing episodes in parallel, showing progress for each</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            The scanning phase displays a progress bar when processing many existing episodes &mdash; this is especially helpful on network shares where metadata reads can be slow.
+          </p>
+
+          <!-- Smart Sync -->
+          <h3>Smart Sync: How Episodes Are Tracked</h3>
+          <p>
+            podpull identifies episodes using their <strong>GUID</strong> (a unique identifier from the RSS feed). This means:
+          </p>
+          <ul>
+            <li>Episodes are matched by GUID, not filename or URL</li>
+            <li>Moving or renaming files in the output directory won't cause re-downloads (the JSON metadata contains the GUID)</li>
+            <li>If a feed lacks GUIDs (rare), podpull falls back to using the episode URL as an identifier</li>
+          </ul>
+          <div class="callout-box">
+            <h4>When Re-downloads Might Happen</h4>
+            <p>If a podcast host changes their feed URL structure without preserving GUIDs, episodes may be re-downloaded. This is uncommon but can happen during podcast platform migrations.</p>
+          </div>
+
+          <!-- Atomic Downloads -->
+          <h3>Safe Downloads</h3>
+          <p>
+            podpull uses atomic downloads to ensure file integrity:
+          </p>
+          <ul>
+            <li>Episodes download to a temporary <code>.partial</code> file first</li>
+            <li>A SHA-256 hash is computed during download and stored in the metadata</li>
+            <li>Only when the download completes successfully is the file renamed to its final name</li>
+            <li>If a download is interrupted, the <code>.partial</code> file is automatically cleaned up on the next sync</li>
+          </ul>
+          <p>
+            This means you'll never have corrupted files from interrupted downloads, and you can safely run podpull repeatedly.
+          </p>
+
+          <!-- Error Handling -->
+          <h3>Error Handling</h3>
+          <p>
+            When individual episodes fail to download (network errors, 404s, etc.), podpull continues with the remaining episodes. At the end, failed episodes are listed:
+          </p>
+          <div class="code-block">
+            <pre><code class="language-bash">Downloaded 47 of 50 episodes
+Failed episodes:
+  - Episode 23: Connection timeout
+  - Episode 38: HTTP 404 Not Found
+  - Episode 41: HTTP 503 Service Unavailable</code></pre>
+          </div>
+          <p>
+            Use <code>-q</code> (quiet mode) to suppress progress output but still see the final summary.
+          </p>
+
+          <!-- Exit Codes -->
+          <h3>Exit Codes</h3>
+          <p>
+            podpull returns meaningful exit codes for scripting:
+          </p>
+          <div class="docs-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Exit Code</th>
+                  <th>Meaning</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>0</code></td>
+                  <td>Success (episodes downloaded or already up to date)</td>
+                </tr>
+                <tr>
+                  <td><code>1</code></td>
+                  <td>Failure (no episodes downloaded and at least one failure occurred)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Advanced Examples -->
+          <h3>Advanced Examples</h3>
+          <p><strong>Cron job with error detection:</strong></p>
+          <div class="code-block">
+            <pre><code class="language-bash"># In crontab - sync daily, log errors
+0 3 * * * podpull -q https://example.com/feed.xml ~/Podcasts/show/ 2>&1 | logger -t podpull || echo "Sync failed" | mail -s "podpull error" you@example.com</code></pre>
+          </div>
+          <p><strong>Gradual archive download (10 episodes at a time):</strong></p>
+          <div class="code-block">
+            <pre><code class="language-bash"># Download 10 oldest undownloaded episodes
+# Run repeatedly to gradually build up the archive
+podpull -l 10 https://example.com/feed.xml ~/Podcasts/huge-archive/</code></pre>
+          </div>
+          <p><strong>Fast sync with many connections:</strong></p>
+          <div class="code-block">
+            <pre><code class="language-bash"># Use 8 concurrent downloads on a fast connection
+podpull -c 8 https://example.com/feed.xml ~/Podcasts/show/</code></pre>
+          </div>
+
+          <!-- Troubleshooting -->
+          <h3>Troubleshooting</h3>
+          <p><strong>Episodes keep re-downloading:</strong></p>
+          <ul>
+            <li>Check if the podcast host changed their feed URL structure</li>
+            <li>Look for missing GUID fields in the RSS feed (podpull will warn about this)</li>
+            <li>Ensure the <code>.json</code> metadata files haven't been deleted</li>
+          </ul>
+          <p><strong>Scanning phase is slow:</strong></p>
+          <ul>
+            <li>This is normal on network shares (NFS, SMB) with many episodes</li>
+            <li>Each episode requires reading its metadata JSON file</li>
+            <li>Consider using a local SSD for the podcast directory</li>
+          </ul>
+          <p><strong>Download failures:</strong></p>
+          <ul>
+            <li>Transient network errors usually succeed on the next sync</li>
+            <li>Persistent 404s may indicate the episode was removed from the host</li>
+            <li>Try increasing <code>--concurrent</code> if downloads seem throttled</li>
+          </ul>
         </div>
       </div>
     </section>

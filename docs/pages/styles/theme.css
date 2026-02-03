@@ -5,6 +5,11 @@
   --color-primary-hover: #6d28d9;
   --color-primary-subtle: #2d2640;
 
+  /* Warning colors - Amber palette */
+  --color-warning-rgb: 245, 158, 11;
+  --color-warning: rgb(var(--color-warning-rgb));
+  --color-warning-subtle: rgba(var(--color-warning-rgb), 0.1);
+
   /* Backgrounds */
   --color-bg: #0f0f14;
   --color-bg-transparent: rgba(15, 15, 20, 0.9); /* Semi-transparent version of --color-bg for navbar */
