@@ -6,6 +6,7 @@ authors = ["Jakob Westhoff <jakob@westhoffswelt.de>"]
 license = "MPL-2.0"
 description = "A fast, minimal CLI tool for downloading and synchronizing podcasts from RSS feeds"
 repository = "https://github.com/jakobwesthoff/podpull"
+homepage = "https://podpull.westhoffswelt.de"
 keywords = ["podcast", "rss", "download", "sync", "backup"]
 categories = ["command-line-utilities", "multimedia"]
 
