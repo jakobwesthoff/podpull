@@ -1,0 +1,56 @@
+name: podpull
+tagline: Download and sync podcasts from RSS feeds
+github: jakobwesthoff/podpull
+
+author:
+  name: Jakob Westhoff
+  website: https://westhoffswelt.de
+
+navbar_buttons:
+  - label: Quick Start
+    href: "#quickstart"
+    style: primary
+    icon: download
+  - label: GitHub
+    href: https://github.com/jakobwesthoff/podpull
+    style: secondary
+    icon: github
+
+sections:
+  - id: hero
+    file: sections/hero.html
+    nav: false
+
+  - id: highlights
+    file: sections/highlights.html
+    nav: false
+
+  - id: demo
+    file: sections/demo.html
+    nav: true
+    nav_label: Demo
+
+  - id: quickstart
+    file: sections/quick-start.html
+    nav: true
+    nav_label: Quick Start
+
+  - id: docs
+    source: readme
+    nav: true
+    nav_label: Documentation
+
+  - id: footer
+    file: sections/footer.html
+    nav: false
+
+imprint:
+  enabled: true
+  name: Jakob Westhoff
+  address: |
+    Am Bollwerk 6
+    58300 Wetter
+    Deutschland
+  email_encrypted: "PyweByB0EQsnRA01SStYMwQhN1wUUw=="
+  phone_encrypted: "fnlMSHMDVk5jA1FvHXUS"
+  encryption_key: "HZhuO4saG0rM/Z+QnZPec6Eavq72uLMmIIOF262+GKH="

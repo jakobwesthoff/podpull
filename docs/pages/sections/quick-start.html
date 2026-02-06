@@ -1,0 +1,56 @@
+<section id="quickstart" class="quickstart">
+  <div class="container">
+    <h2>Quick Start</h2>
+
+    <div class="tabs">
+      <div class="tab-buttons">
+        <button class="tab-button active" data-tab="cargo">Cargo (Recommended)</button>
+        <button class="tab-button" data-tab="binary">Binary Releases</button>
+        <button class="tab-button" data-tab="source">From Source</button>
+      </div>
+      <div class="tab-panels">
+        <div class="tab-panel active" data-tab="cargo">
+          <div class="code-block">
+            <pre><code class="language-bash">cargo install podpull</code></pre>
+          </div>
+          <div style="padding: var(--space-md) var(--space-lg); border-top: 1px solid var(--color-border);">
+            <p style="margin: 0; color: var(--color-text-muted);">
+              Available on <a href="https://crates.io/crates/podpull" style="color: var(--color-primary);">crates.io</a>
+            </p>
+          </div>
+        </div>
+        <div class="tab-panel" data-tab="binary">
+          <div style="padding: var(--space-lg); background-color: var(--color-bg-code);">
+            <p style="margin: 0 0 1rem 0;">Download pre-built binaries from GitHub Releases:</p>
+            <a href="https://github.com/jakobwesthoff/podpull/releases" class="btn btn-primary">
+              <i data-icon="download"></i>
+              View Releases
+            </a>
+          </div>
+        </div>
+        <div class="tab-panel" data-tab="source">
+          <div class="code-block">
+            <pre><code class="language-bash">git clone https://github.com/jakobwesthoff/podpull.git
+cd podpull
+cargo build --release</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <h3>Basic Usage</h3>
+    <div class="code-block">
+      <pre><code class="language-bash"># Download a podcast
+podpull https://example.com/podcast/feed.xml ~/Podcasts/my-show/
+
+# Sync new episodes (already downloaded ones are skipped)
+podpull https://example.com/podcast/feed.xml ~/Podcasts/my-show/
+
+# Download faster with more connections
+podpull -c 5 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/
+
+# Gradually download a large back-catalog
+podpull -l 10 https://feeds.example.com/podcast.xml ~/Podcasts/my-show/</code></pre>
+    </div>
+  </div>
+</section>
