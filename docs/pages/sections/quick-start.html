@@ -5,6 +5,7 @@
     <div class="tabs">
       <div class="tab-buttons">
         <button class="tab-button active" data-tab="cargo">Cargo (Recommended)</button>
+        <button class="tab-button" data-tab="homebrew">Homebrew</button>
         <button class="tab-button" data-tab="binary">Binary Releases</button>
         <button class="tab-button" data-tab="source">From Source</button>
       </div>
@@ -16,6 +17,16 @@
           <div style="padding: var(--space-md) var(--space-lg); border-top: 1px solid var(--color-border);">
             <p style="margin: 0; color: var(--color-text-muted);">
               Available on <a href="https://crates.io/crates/podpull" style="color: var(--color-primary);">crates.io</a>
+            </p>
+          </div>
+        </div>
+        <div class="tab-panel" data-tab="homebrew">
+          <div class="code-block">
+            <pre><code class="language-bash">brew install jakobwesthoff/tap/podpull</code></pre>
+          </div>
+          <div style="padding: var(--space-md) var(--space-lg); border-top: 1px solid var(--color-border);">
+            <p style="margin: 0; color: var(--color-text-muted);">
+              Available from <a href="https://github.com/jakobwesthoff/homebrew-tap" style="color: var(--color-primary);">jakobwesthoff/homebrew-tap</a>
             </p>
           </div>
         </div>
