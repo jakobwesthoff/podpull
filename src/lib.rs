@@ -18,4 +18,6 @@ pub use error::SyncError;
 pub use http::{HttpClient, ReqwestClient};
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
 pub use state::UnreadableMetadata;
-pub use sync::{AudioCheck, SyncOptions, SyncResult, sync_podcast};
+pub use sync::{
+    AudioCheck, FailedEpisode, SyncOptions, SyncResult, UnverifiableAudio, sync_podcast,
+};

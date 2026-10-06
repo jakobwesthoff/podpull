@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use futures::{FutureExt, StreamExt};
 
-use super::SyncOptions;
+use super::{FailedEpisode, SyncOptions};
 use crate::episode::{DownloadContext, filename_claim_key, hash_file, stage_download};
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
@@ -32,8 +32,7 @@ pub(super) enum DownloadOutcome {
 pub(super) struct DownloadTotals {
     pub(super) downloaded: usize,
     pub(super) repaired: usize,
-    /// Failed downloads as (episode title, error message) pairs
-    pub(super) failed_episodes: Vec<(String, String)>,
+    pub(super) failed_episodes: Vec<FailedEpisode>,
     /// Episodes whose audio was already stored byte for byte
     pub(super) adopted: usize,
 }
@@ -152,7 +151,9 @@ pub(super) async fn download_all<C: HttpClient>(
             DownloadOutcome::Downloaded => totals.downloaded += 1,
             DownloadOutcome::Repaired => totals.repaired += 1,
             DownloadOutcome::AlreadyStored => totals.adopted += 1,
-            DownloadOutcome::Failed { error } => totals.failed_episodes.push((title, error)),
+            DownloadOutcome::Failed { error } => {
+                totals.failed_episodes.push(FailedEpisode { title, error })
+            }
         }
     }
     totals

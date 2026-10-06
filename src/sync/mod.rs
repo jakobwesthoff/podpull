@@ -68,10 +68,8 @@ pub struct SyncResult {
     pub repaired: usize,
     /// Number of episodes skipped (already present)
     pub skipped: usize,
-    /// Number of episodes that failed to download
-    pub failed: usize,
-    /// Details of failed episodes (title, error message)
-    pub failed_episodes: Vec<(String, String)>,
+    /// Episodes whose download failed
+    pub failed_episodes: Vec<FailedEpisode>,
     /// Stored audio found damaged or missing and left as it is
     pub damaged: Vec<DamagedAudio>,
     /// Number of new episodes whose audio was already stored byte for byte,
@@ -82,9 +80,23 @@ pub struct SyncResult {
     pub stuck_partial_files: Vec<PathBuf>,
     /// Episode metadata files whose content is not valid metadata
     pub unreadable_metadata: Vec<UnreadableMetadata>,
-    /// Stored audio that could not be read to check it, as (audio filename,
-    /// error message) pairs
-    pub unverifiable_audio: Vec<(String, String)>,
+    /// Stored audio that could not be read to check it
+    pub unverifiable_audio: Vec<UnverifiableAudio>,
+}
+
+/// An episode whose download failed
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedEpisode {
+    pub title: String,
+    pub error: String,
+}
+
+/// Stored audio that could not be read to check it against its recorded
+/// hash
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnverifiableAudio {
+    pub audio_filename: String,
+    pub error: String,
 }
 
 /// Synchronize a podcast feed to a local directory
@@ -177,15 +189,14 @@ pub async fn sync_podcast<C: HttpClient>(
     )
     .await;
     let downloaded = totals.downloaded;
-    let failed_eps = totals.failed_episodes;
-    let failed = failed_eps.len();
+    let failed_episodes = totals.failed_episodes;
 
     reporter.report(ProgressEvent::SyncCompleted {
         downloaded_count: downloaded,
         existing_count: existing,
         repaired_count: totals.repaired,
         limited_count: limited,
-        failed_count: failed,
+        failed_count: failed_episodes.len(),
         damaged_count: verification.damaged.len(),
         adopted_count: totals.adopted,
     });
@@ -194,8 +205,7 @@ pub async fn sync_podcast<C: HttpClient>(
         downloaded,
         repaired: totals.repaired,
         skipped: existing,
-        failed,
-        failed_episodes: failed_eps,
+        failed_episodes,
         damaged: verification.damaged,
         adopted: totals.adopted,
         stuck_partial_files: state.stuck_partial_files().to_vec(),
@@ -339,7 +349,7 @@ mod tests {
 
         assert_eq!(result.downloaded, 2);
         assert_eq!(result.skipped, 0);
-        assert_eq!(result.failed, 0);
+        assert_eq!(result.failed_episodes.len(), 0);
 
         // Check files exist
         assert!(dir.path().join("podcast.json").exists());
@@ -603,7 +613,7 @@ mod tests {
         let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
 
         assert_eq!(result.downloaded, 2);
-        assert_eq!(result.failed, 0);
+        assert_eq!(result.failed_episodes.len(), 0);
         let recorded = recorded_episodes(dir.path());
         assert_eq!(
             recorded["nomad-reupload"],
@@ -877,7 +887,7 @@ mod tests {
         let (result, events) = sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL]).await;
 
         assert_eq!(result.downloaded, 1);
-        assert_eq!(result.failed, 0);
+        assert_eq!(result.failed_episodes.len(), 0);
         assert_eq!(result.skipped, 0);
         assert_eq!(result.damaged, vec![damage(DamageRemedy::RepairAvailable)]);
         assert_eq!(
@@ -1025,7 +1035,7 @@ mod tests {
         assert!(result.damaged.is_empty());
         assert_eq!(result.unverifiable_audio.len(), 1);
         assert_eq!(
-            result.unverifiable_audio[0].0,
+            result.unverifiable_audio[0].audio_filename,
             format!("{}.mp3", NOMAD_STEM)
         );
         assert!(events.iter().any(|event| matches!(
@@ -1050,8 +1060,8 @@ mod tests {
         let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
 
         assert_eq!(result.downloaded, 0);
-        assert_eq!(result.failed, 1);
-        assert_eq!(result.failed_episodes[0].0, "SFT Bits: Sega Nomad");
+        assert_eq!(result.failed_episodes.len(), 1);
+        assert_eq!(result.failed_episodes[0].title, "SFT Bits: Sega Nomad");
         // Audio without metadata would claim its name and make the next sync
         // store the episode a second time under another one.
         assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
@@ -1070,8 +1080,8 @@ mod tests {
 
         let (result, events) = sync_recording(dir.path(), &[NOMAD_ORIGINAL]).await;
 
-        assert_eq!(result.failed, 1);
-        assert!(result.failed_episodes[0].1.contains("already exists"));
+        assert_eq!(result.failed_episodes.len(), 1);
+        assert!(result.failed_episodes[0].error.contains("already exists"));
         assert_eq!(result.stuck_partial_files, vec![stuck.clone()]);
         assert!(events.iter().any(|event| matches!(
             event,
@@ -1088,7 +1098,7 @@ mod tests {
         let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
 
         assert_eq!(result.downloaded, 0);
-        assert_eq!(result.failed, 1);
+        assert_eq!(result.failed_episodes.len(), 1);
         assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
     }
 
@@ -1130,7 +1140,7 @@ mod tests {
         assert_eq!(result.downloaded, 1);
         assert_eq!(result.repaired, 1);
         assert_eq!(result.skipped, 0);
-        assert_eq!(result.failed, 0);
+        assert_eq!(result.failed_episodes.len(), 0);
         assert!(result.damaged.is_empty());
         assert!(events.iter().any(|event| matches!(
             event,
@@ -1179,7 +1189,7 @@ mod tests {
 
         assert_eq!(result.downloaded, 1);
         assert_eq!(result.repaired, 1);
-        assert_eq!(result.failed, 0);
+        assert_eq!(result.failed_episodes.len(), 0);
         assert!(!recorded_episodes(dir.path()).contains_key("older"));
         // The repair is reported apart from the new episodes, so the limit
         // stays visible.
@@ -1204,7 +1214,7 @@ mod tests {
         let (result, _) = sync_repairing(dir.path(), &[NOMAD_ORIGINAL], None).await;
 
         assert_eq!(result.downloaded, 1);
-        assert_eq!(result.failed, 0);
+        assert_eq!(result.failed_episodes.len(), 0);
         assert_eq!(result.damaged, vec![damage(DamageRemedy::NoFeedEpisode)]);
         assert_eq!(std::fs::read(&audio).unwrap(), b"interleaved audio");
     }
@@ -1324,11 +1334,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.downloaded, 0);
-        assert_eq!(result.failed, 2);
+        assert_eq!(result.failed_episodes.len(), 2);
         let mut titles: Vec<_> = result
             .failed_episodes
             .iter()
-            .map(|(title, _)| title.as_str())
+            .map(|failed| failed.title.as_str())
             .collect();
         titles.sort();
         assert_eq!(titles, vec!["Episode 1", "Episode 2"]);
@@ -1765,7 +1775,7 @@ mod tests {
 
         let (result, _) = sync_recording(dir.path(), &[REISSUED]).await;
 
-        assert_eq!(result.failed, 1);
+        assert_eq!(result.failed_episodes.len(), 1);
         assert_eq!(result.adopted, 0);
         assert_eq!(audio_files(dir.path()), vec![format!("{}.mp3", NOMAD_STEM)]);
     }

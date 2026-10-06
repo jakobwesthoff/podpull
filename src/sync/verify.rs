@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use super::UnverifiableAudio;
 use crate::damage::{DamageKind, DamageRemedy, DamagedAudio};
 use crate::episode::{get_audio_extension, hash_file};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
@@ -20,8 +21,7 @@ pub(super) struct Verification {
     pub(super) affected_present_guids: HashSet<String>,
     /// Audio filenames of stored audio found to match its recorded hash
     pub(super) intact: HashSet<String>,
-    /// Stored audio that could not be read, as (audio filename, error)
-    pub(super) unverifiable: Vec<(String, String)>,
+    pub(super) unverifiable: Vec<UnverifiableAudio>,
 }
 
 /// Check stored audio against the hashes recorded when it was downloaded
@@ -80,9 +80,10 @@ pub(super) async fn verify_stored_audio(
                         audio_filename: stored.audio_filename.clone(),
                         error: e.to_string(),
                     });
-                    verification
-                        .unverifiable
-                        .push((stored.audio_filename.clone(), e.to_string()));
+                    verification.unverifiable.push(UnverifiableAudio {
+                        audio_filename: stored.audio_filename.clone(),
+                        error: e.to_string(),
+                    });
                     continue;
                 }
             }

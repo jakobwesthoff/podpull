@@ -564,16 +564,18 @@ async fn main() -> Result<()> {
 
 /// Exit status of a finished sync
 ///
-/// 1 when downloads failed and none succeeded; 2 when some downloads failed
-/// or damaged audio was found but the run got something done.
+/// 1 when downloads failed and nothing was downloaded, repaired or recorded
+/// as already stored; otherwise 2 when downloads failed, damaged or missing
+/// audio was found, or a warning was reported.
 fn exit_code(result: &SyncResult) -> i32 {
     let succeeded = result.downloaded + result.repaired + result.adopted;
     let warned = !result.stuck_partial_files.is_empty()
         || !result.unreadable_metadata.is_empty()
         || !result.unverifiable_audio.is_empty();
-    if result.failed > 0 && succeeded == 0 {
+    let failed = !result.failed_episodes.is_empty();
+    if failed && succeeded == 0 {
         1
-    } else if result.failed > 0 || !result.damaged.is_empty() || warned {
+    } else if failed || !result.damaged.is_empty() || warned {
         2
     } else {
         0
@@ -584,8 +586,14 @@ fn exit_code(result: &SyncResult) -> i32 {
 fn write_problem_lists(result: &SyncResult, out: &mut impl Write) -> std::io::Result<()> {
     if !result.failed_episodes.is_empty() {
         writeln!(out, "\n{}", "Failed episodes:".red().bold())?;
-        for (title, error) in &result.failed_episodes {
-            writeln!(out, "  {}{} - {}", CROSS, title.yellow(), error.dimmed())?;
+        for failed in &result.failed_episodes {
+            writeln!(
+                out,
+                "  {}{} - {}",
+                CROSS,
+                failed.title.yellow(),
+                failed.error.dimmed()
+            )?;
         }
     }
 
@@ -616,12 +624,9 @@ fn write_problem_lists(result: &SyncResult, out: &mut impl Write) -> std::io::Re
                 .iter()
                 .map(|unreadable| unreadable_metadata_message(&unreadable.path, &unreadable.error)),
         )
-        .chain(
-            result
-                .unverifiable_audio
-                .iter()
-                .map(|(audio_filename, error)| unverifiable_audio_message(audio_filename, error)),
-        )
+        .chain(result.unverifiable_audio.iter().map(|unverifiable| {
+            unverifiable_audio_message(&unverifiable.audio_filename, &unverifiable.error)
+        }))
         .collect();
     if !warnings.is_empty() {
         writeln!(out, "\n{}", "Warnings:".yellow().bold())?;
@@ -635,7 +640,7 @@ fn write_problem_lists(result: &SyncResult, out: &mut impl Write) -> std::io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use podpull::DamagedAudio;
+    use podpull::{DamagedAudio, FailedEpisode, UnverifiableAudio};
 
     #[test]
     fn plan_message_shows_only_new_episodes_without_limit_or_repairs() {
@@ -812,9 +817,11 @@ mod tests {
     fn result(downloaded: usize, failed: usize, damaged: usize) -> SyncResult {
         SyncResult {
             downloaded,
-            failed,
             failed_episodes: (0..failed)
-                .map(|n| (format!("Episode {}", n), "HTTP error 404".to_string()))
+                .map(|n| FailedEpisode {
+                    title: format!("Episode {}", n),
+                    error: "HTTP error 404".to_string(),
+                })
                 .collect(),
             damaged: (0..damaged)
                 .map(|n| DamagedAudio {
@@ -875,7 +882,10 @@ mod tests {
         let mut stuck = result(0, 0, 0);
         stuck.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
         let mut unverifiable = result(0, 0, 0);
-        unverifiable.unverifiable_audio = vec![("a.mp3".to_string(), "denied".to_string())];
+        unverifiable.unverifiable_audio = vec![UnverifiableAudio {
+            audio_filename: "a.mp3".to_string(),
+            error: "denied".to_string(),
+        }];
 
         assert_eq!(exit_code(&stuck), 2);
         assert_eq!(exit_code(&unverifiable), 2);
@@ -886,8 +896,10 @@ mod tests {
         colored::control::set_override(false);
         let mut with_warnings = result(1, 0, 0);
         with_warnings.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
-        with_warnings.unverifiable_audio =
-            vec![("b.mp3".to_string(), "Permission denied".to_string())];
+        with_warnings.unverifiable_audio = vec![UnverifiableAudio {
+            audio_filename: "b.mp3".to_string(),
+            error: "Permission denied".to_string(),
+        }];
         let mut out = Vec::new();
 
         write_problem_lists(&with_warnings, &mut out).unwrap();
