@@ -3,9 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use futures::{FutureExt, StreamExt};
 
 use url::Url;
 
@@ -114,7 +117,7 @@ pub struct DamagedAudio {
 /// 3. Creates a sync plan
 /// 4. Downloads new episodes in parallel
 /// 5. Writes metadata files
-pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
+pub async fn sync_podcast<C: HttpClient>(
     client: &C,
     feed_source: &str,
     output_dir: &Path,
@@ -243,7 +246,11 @@ async fn load_podcast<C: HttpClient>(
 /// What became of one planned download
 enum DownloadOutcome {
     Downloaded,
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
+    /// Skipped because an earlier failure stopped the run
+    NotStarted,
 }
 
 /// Results of all downloads of one sync run
@@ -255,27 +262,47 @@ struct DownloadTotals {
     not_started: usize,
 }
 
-/// Returns a download slot to the pool when the task holding it ends,
-/// including by panic, so a failing task cannot starve later downloads.
-struct SlotGuard {
-    pool: tokio::sync::mpsc::Sender<usize>,
+/// A download slot ID taken from the free list, returned when dropped
+///
+/// Slot IDs give each running download a stable progress bar. At most as
+/// many downloads run as there are slots, so a free one is always available
+/// when a download starts.
+struct SlotGuard<'a> {
+    free_slots: &'a Mutex<Vec<usize>>,
     download_id: usize,
 }
 
-impl Drop for SlotGuard {
-    fn drop(&mut self) {
-        // The pool holds exactly as many slots as it has capacity for, so
-        // handing one back never finds it full. A closed pool means the sync
-        // stopped waiting for slots, and the slot is no longer needed.
-        let _ = self.pool.try_send(self.download_id);
+impl<'a> SlotGuard<'a> {
+    fn take(free_slots: &'a Mutex<Vec<usize>>) -> Self {
+        let download_id = free_slots
+            .lock()
+            .expect("no code panics while holding the slot list")
+            .pop()
+            .expect("no more downloads run than there are slots");
+        Self {
+            free_slots,
+            download_id,
+        }
     }
 }
 
-/// Download all planned episodes in parallel and write their metadata
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        self.free_slots
+            .lock()
+            .expect("no code panics while holding the slot list")
+            .push(self.download_id);
+    }
+}
+
+/// Download all planned episodes concurrently and write their metadata
 ///
-/// A pool of slot IDs limits concurrency and gives each running download a
-/// stable ID for its progress bar. Episodes start in plan order.
-async fn download_all<C: HttpClient + Clone + 'static>(
+/// Downloads run as concurrent futures on the calling task, at most
+/// `max_concurrent` at a time and started in plan order. Keeping them off
+/// spawned tasks lets the client be borrowed. A download that panics, for
+/// example in a reporter, counts as a failure of its episode instead of
+/// taking the whole sync down.
+async fn download_all<C: HttpClient>(
     client: &C,
     to_download: Vec<PlannedDownload>,
     output_dir: &Path,
@@ -283,85 +310,81 @@ async fn download_all<C: HttpClient + Clone + 'static>(
     options: &SyncOptions,
 ) -> DownloadTotals {
     let total_to_download = to_download.len();
-    let (slot_tx, mut slot_rx) = tokio::sync::mpsc::channel(options.max_concurrent);
-    for slot in 0..options.max_concurrent {
-        slot_tx
-            .try_send(slot)
-            .expect("channel capacity equals the number of slots");
-    }
-
-    // The title stays outside the task, so a task that panics can still be
-    // reported under its episode.
-    let mut tasks = Vec::new();
+    let free_slots = Mutex::new((0..options.max_concurrent).rev().collect::<Vec<_>>());
 
     // Without continue_on_error, the first failure stops further downloads
-    // from starting; downloads already running finish.
-    let stop = Arc::new(AtomicBool::new(false));
+    // from starting; downloads already running finish. A download starts
+    // only once a running one has completed, so it sees every failure that
+    // made room for it.
+    let stop = AtomicBool::new(false);
 
-    for (episode_index, planned) in to_download.into_iter().enumerate() {
-        let download_id = slot_rx
-            .recv()
-            .await
-            .expect("slot_tx stays alive in this function, so the channel never closes");
-        // A failing task raises the flag before it releases its slot, so the
-        // check after acquiring a slot sees every failure that freed it.
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        let slot = SlotGuard {
-            pool: slot_tx.clone(),
-            download_id,
-        };
+    let outcomes: Vec<(String, DownloadOutcome)> =
+        futures::stream::iter(to_download.into_iter().enumerate())
+            .map(|(episode_index, planned)| {
+                let free_slots = &free_slots;
+                let stop = &stop;
+                async move {
+                    let title = planned.episode.title.clone();
+                    if stop.load(Ordering::SeqCst) {
+                        return (title, DownloadOutcome::NotStarted);
+                    }
 
-        let client = client.clone();
-        let output_dir = output_dir.to_path_buf();
-        let reporter = reporter.clone();
-        let title = planned.episode.title.clone();
-        let stop = stop.clone();
-        let continue_on_error = options.continue_on_error;
+                    let slot = SlotGuard::take(free_slots);
+                    let context = DownloadContext {
+                        download_id: slot.download_id,
+                        episode_index,
+                        total_to_download,
+                    };
+                    let attempt = AssertUnwindSafe(download_planned(
+                        client, &planned, output_dir, &context, reporter,
+                    ))
+                    .catch_unwind()
+                    .await;
 
-        let task = tokio::spawn(async move {
-            let _slot = slot;
-            let context = DownloadContext {
-                download_id,
-                episode_index,
-                total_to_download,
-            };
-            let Err(error) =
-                download_planned(&client, &planned, &output_dir, &context, &reporter).await
-            else {
-                return DownloadOutcome::Downloaded;
-            };
-
-            reporter.report(ProgressEvent::DownloadFailed {
-                download_id,
-                episode_title: planned.episode.title.clone(),
-                error: error.clone(),
-            });
-            if !continue_on_error {
-                stop.store(true, Ordering::SeqCst);
-            }
-            DownloadOutcome::Failed { error }
-        });
-
-        tasks.push((title, task));
-    }
+                    let error = match attempt {
+                        Ok(Ok(())) => return (title, DownloadOutcome::Downloaded),
+                        Ok(Err(error)) => {
+                            reporter.report(ProgressEvent::DownloadFailed {
+                                download_id: slot.download_id,
+                                episode_title: title.clone(),
+                                error: error.clone(),
+                            });
+                            error
+                        }
+                        Err(panic) => format!("Download panicked: {}", panic_message(&*panic)),
+                    };
+                    if !options.continue_on_error {
+                        stop.store(true, Ordering::SeqCst);
+                    }
+                    (title, DownloadOutcome::Failed { error })
+                }
+            })
+            .buffer_unordered(options.max_concurrent)
+            .collect()
+            .await;
 
     let mut totals = DownloadTotals {
         downloaded: 0,
         failed_episodes: Vec::new(),
-        not_started: total_to_download - tasks.len(),
+        not_started: 0,
     };
-    for (title, task) in tasks {
-        match task.await {
-            Ok(DownloadOutcome::Downloaded) => totals.downloaded += 1,
-            Ok(DownloadOutcome::Failed { error }) => totals.failed_episodes.push((title, error)),
-            Err(join_error) => totals
-                .failed_episodes
-                .push((title, format!("Download task failed: {}", join_error))),
+    for (title, outcome) in outcomes {
+        match outcome {
+            DownloadOutcome::Downloaded => totals.downloaded += 1,
+            DownloadOutcome::Failed { error } => totals.failed_episodes.push((title, error)),
+            DownloadOutcome::NotStarted => totals.not_started += 1,
         }
     }
     totals
+}
+
+/// The message a panic was raised with, if it carried one
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown cause")
 }
 
 /// Download one planned episode and put its audio and metadata in place
@@ -1531,7 +1554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_counts_panicking_download_tasks_as_failed() {
+    async fn sync_counts_panicking_downloads_as_failed() {
         let dir = tempdir().unwrap();
         let client = MockHttpClient {
             feed_xml: SAMPLE_FEED.to_string(),
@@ -1542,8 +1565,8 @@ mod tests {
             ..Default::default()
         };
 
-        // With a single slot, a task that never hands its slot back would
-        // block the second episode forever.
+        // With a single slot, a download that never hands its slot back
+        // would block the second episode forever.
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             sync_podcast(
@@ -1555,7 +1578,7 @@ mod tests {
             ),
         )
         .await
-        .expect("sync finishes although its download tasks panic")
+        .expect("sync finishes although its downloads panic")
         .unwrap();
 
         assert_eq!(result.downloaded, 0);
@@ -1864,5 +1887,65 @@ mod tests {
             })
             .count();
         assert_eq!(audio_files, 1);
+    }
+
+    /// A client that borrows its responses, so it is neither Clone nor
+    /// 'static
+    struct BorrowingClient<'a> {
+        inner: &'a MockHttpClient,
+    }
+
+    #[async_trait]
+    impl HttpClient for BorrowingClient<'_> {
+        async fn get_bytes(&self, url: &str) -> Result<Bytes, reqwest::Error> {
+            self.inner.get_bytes(url).await
+        }
+
+        async fn get_stream(&self, url: &str) -> Result<HttpResponse, reqwest::Error> {
+            self.inner.get_stream(url).await
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_accepts_a_client_that_is_neither_clone_nor_static() {
+        let dir = tempdir().unwrap();
+        let mock = MockHttpClient {
+            feed_xml: SAMPLE_FEED.to_string(),
+            audio_data: b"fake audio".to_vec(),
+        };
+
+        let result = sync_podcast(
+            &BorrowingClient { inner: &mock },
+            "https://example.com/feed.xml",
+            dir.path(),
+            &SyncOptions::default(),
+            NoopReporter::shared(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.downloaded, 2);
+    }
+
+    #[test]
+    fn sync_future_can_be_spawned() {
+        fn assert_send<T: Send>(_: &T) {}
+        let mock = MockHttpClient {
+            feed_xml: SAMPLE_FEED.to_string(),
+            audio_data: Vec::new(),
+        };
+
+        let options = SyncOptions::default();
+
+        // Library users run a sync on a spawned task, which needs a Send
+        // future; the future is only built here, never polled.
+        let sync = sync_podcast(
+            &mock,
+            "https://example.com/feed.xml",
+            Path::new("/nonexistent"),
+            &options,
+            NoopReporter::shared(),
+        );
+        assert_send(&sync);
     }
 }
