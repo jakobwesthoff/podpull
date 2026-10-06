@@ -31,7 +31,6 @@ pub trait HttpClient: Send + Sync {
 }
 
 /// Default HTTP client implementation using reqwest
-#[derive(Clone)]
 pub struct ReqwestClient {
     client: reqwest::Client,
 }
@@ -42,11 +41,6 @@ impl ReqwestClient {
         Self {
             client: reqwest::Client::new(),
         }
-    }
-
-    /// Create a new ReqwestClient with a custom reqwest::Client
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
     }
 }
 
@@ -87,11 +81,5 @@ mod tests {
     fn reqwest_client_can_be_created() {
         let _client = ReqwestClient::new();
         let _client_default = ReqwestClient::default();
-    }
-
-    #[test]
-    fn reqwest_client_can_be_cloned() {
-        let client = ReqwestClient::new();
-        let _cloned = client.clone();
     }
 }

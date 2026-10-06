@@ -19,7 +19,7 @@ use crate::progress::{ProgressEvent, ProgressReporter};
 /// State of the output directory, as found by [`scan_output_dir`]
 ///
 /// The fields are views of one directory listing and are kept consistent by
-/// construction, so they are only readable from outside.
+/// construction, so they are private and read through methods.
 #[derive(Debug, Clone)]
 pub struct OutputState {
     output_dir: PathBuf,

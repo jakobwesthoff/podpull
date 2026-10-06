@@ -35,12 +35,11 @@ pub struct SyncOptions {
 
 /// Which stored audio a sync checks against the hash recorded when it was
 /// downloaded
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCheck {
     /// Only audio a new episode's base filename collides with, which is
     /// where podpull 1.1.2 and earlier could leave damage; mismatches are
     /// reported
-    #[default]
     Collisions,
     /// All stored audio, reading the whole archive; mismatches are reported
     Verify,
@@ -49,6 +48,8 @@ pub enum AudioCheck {
     Repair,
 }
 
+/// Options the tests start from; the CLI sets every option itself
+#[cfg(test)]
 impl Default for SyncOptions {
     fn default() -> Self {
         Self {
