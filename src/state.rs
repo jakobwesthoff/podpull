@@ -165,6 +165,13 @@ pub struct StoredEpisode {
 }
 
 impl StoredEpisode {
+    /// Stem shared by the metadata file and the audio file, as listed
+    pub fn stem(&self) -> &str {
+        self.metadata_filename
+            .strip_suffix(".json")
+            .unwrap_or(&self.metadata_filename)
+    }
+
     /// Whether `episode` is this stored episode re-issued under a new GUID
     ///
     /// A feed entry that replaced this one makes all of its GUIDs disappear
@@ -706,7 +713,7 @@ mod tests {
         let stored: HashMap<_, _> = stored
             .into_iter()
             .map(|episode| {
-                let stem = episode.metadata_filename.trim_end_matches(".json");
+                let stem = episode.stem();
                 (filename_claim_key(stem), episode)
             })
             .collect();

@@ -12,7 +12,9 @@ use futures::{FutureExt, StreamExt};
 
 use url::Url;
 
-use crate::episode::{DownloadContext, get_audio_extension, hash_file, stage_download};
+use crate::episode::{
+    DownloadContext, filename_claim_key, get_audio_extension, hash_file, stage_download,
+};
 use crate::error::{FeedError, SyncError};
 use crate::feed::{
     Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
@@ -494,7 +496,10 @@ async fn download_planned<C: HttpClient>(
         && stored_audio_still_matches(output_dir, stored, staged_audio.content_hash()).await
     {
         staged_audio.discard().await;
-        add_guid_to_episode_metadata(&output_dir.join(&stored.metadata_filename), guid)
+        let stored_metadata_path = output_dir.join(&stored.metadata_filename);
+        let guid = guid.clone();
+        blocking(move || add_guid_to_episode_metadata(&stored_metadata_path, &guid))
+            .await?
             .map_err(|e| format!("Failed to record the GUID of identical audio: {}", e))?;
         reporter.report(ProgressEvent::EpisodeAlreadyStored {
             download_id: context.download_id,
@@ -504,12 +509,21 @@ async fn download_planned<C: HttpClient>(
         return Ok(Placed::AlreadyStored);
     }
 
-    let staged_metadata = match stage_episode_metadata(
-        episode,
-        &audio_filename,
-        Some(staged_audio.content_hash().to_string()),
-        &metadata_path,
-    ) {
+    let staged_metadata = {
+        let episode = episode.clone();
+        let audio_filename = audio_filename.clone();
+        let content_hash = staged_audio.content_hash().to_string();
+        blocking(move || {
+            stage_episode_metadata(
+                &episode,
+                &audio_filename,
+                Some(content_hash),
+                &metadata_path,
+            )
+        })
+        .await?
+    };
+    let staged_metadata = match staged_metadata {
         Ok(staged_metadata) => staged_metadata,
         Err(e) => {
             staged_audio.discard().await;
@@ -523,17 +537,17 @@ async fn download_planned<C: HttpClient>(
     });
 
     if let Err(e) = staged_audio.finalize().await {
-        staged_metadata.discard();
+        blocking(move || staged_metadata.discard()).await?;
         return Err(e.to_string());
     }
 
-    if let Err(e) = staged_metadata.commit() {
+    if let Err(e) = blocking(move || staged_metadata.commit()).await? {
         let mut error = format!("Failed to write metadata: {}", e);
         // A fresh download owns its name, so its audio goes again. A repair
         // replaced audio that the existing metadata still names; removing it
         // would leave that metadata without audio.
         if !planned.replaces_existing
-            && let Err(remove_error) = tokio::fs::remove_file(&audio_path).await
+            && let Err(remove_error) = remove_audio(output_dir, &audio_filename).await
         {
             error.push_str(&format!(
                 "; the audio file {} could not be removed: {}",
@@ -549,6 +563,55 @@ async fn download_planned<C: HttpClient>(
         bytes_downloaded: staged_audio.bytes_downloaded(),
     });
     Ok(Placed::Downloaded)
+}
+
+/// Run blocking file system work outside the task that drives all
+/// downloads
+///
+/// The downloads share one task, so a slow write to a network share done
+/// directly in one of them would hold up every other download.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("File system work failed: {}", e))
+}
+
+/// Remove an audio file podpull just put in place
+///
+/// The file is first removed under the name podpull gave it. A network share
+/// mounted on macOS can fail to find a name with "ä" composed although it
+/// stores exactly that file, so a missing file is looked up under the
+/// spelling the directory lists.
+async fn remove_audio(output_dir: &Path, audio_filename: &str) -> std::io::Result<()> {
+    let output_dir = output_dir.to_path_buf();
+    let audio_filename = audio_filename.to_string();
+    let removal = tokio::task::spawn_blocking(move || {
+        match std::fs::remove_file(output_dir.join(&audio_filename)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match listed_name(&output_dir, &audio_filename)? {
+                    Some(listed) => std::fs::remove_file(output_dir.join(listed)),
+                    None => Err(e),
+                }
+            }
+            outcome => outcome,
+        }
+    });
+    removal.await.map_err(std::io::Error::other)?
+}
+
+/// The name under which `dir` lists the file podpull calls `filename`,
+/// compared by claim key
+fn listed_name(dir: &Path, filename: &str) -> std::io::Result<Option<std::ffi::OsString>> {
+    let key = filename_claim_key(filename);
+    for entry in std::fs::read_dir(dir)? {
+        let name = entry?.file_name();
+        if filename_claim_key(&name.to_string_lossy()) == key {
+            return Ok(Some(name));
+        }
+    }
+    Ok(None)
 }
 
 /// Where a successful download ended up
@@ -669,10 +732,7 @@ async fn verify_stored_audio(
             (Some(episode), DamageRemedy::Repairing) => {
                 verification.repairs.push(PlannedDownload {
                     episode: episode.clone(),
-                    stem: stored
-                        .metadata_filename
-                        .trim_end_matches(".json")
-                        .to_string(),
+                    stem: stored.stem().to_string(),
                     // The stored spelling keeps the download on the very
                     // file it replaces.
                     audio_extension: stored_extension,
@@ -2273,5 +2333,29 @@ mod tests {
             .filter(|event| matches!(event, ProgressEvent::DownloadFailed { .. }))
             .count();
         assert_eq!(failed, 2);
+    }
+
+    #[test]
+    fn listed_name_finds_a_file_spelled_in_another_normalization() {
+        let dir = tempdir().unwrap();
+        // Shares mounted on macOS list "ä" decomposed although podpull
+        // wrote it composed, and a lookup by the composed name can fail.
+        let listed = "2019-12-27-Neuzuga\u{0308}nge #4.mp3";
+        std::fs::write(dir.path().join(listed), b"audio").unwrap();
+
+        let found = listed_name(dir.path(), "2019-12-27-Neuzug\u{00e4}nge #4.mp3").unwrap();
+
+        assert_eq!(found, Some(std::ffi::OsString::from(listed)));
+    }
+
+    #[test]
+    fn listed_name_is_none_without_a_matching_file() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("2019-12-27-Other.mp3"), b"audio").unwrap();
+
+        assert_eq!(
+            listed_name(dir.path(), "2019-12-27-Episode.mp3").unwrap(),
+            None
+        );
     }
 }
