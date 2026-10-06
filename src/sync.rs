@@ -230,7 +230,15 @@ pub async fn sync_podcast<C: HttpClient>(
     // Write podcast metadata
     write_podcast_metadata(&podcast, output_dir)?;
 
-    let totals = download_all(client, to_download, &state, &reporter, options).await;
+    let totals = download_all(
+        client,
+        to_download,
+        &state,
+        &plan.feed_guids,
+        &reporter,
+        options,
+    )
+    .await;
     let downloaded = totals.downloaded;
     let failed_eps = totals.failed_episodes;
     let failed = failed_eps.len();
@@ -356,6 +364,7 @@ async fn download_all<C: HttpClient>(
     client: &C,
     to_download: Vec<PlannedDownload>,
     state: &OutputState,
+    feed_guids: &HashSet<String>,
     reporter: &SharedProgressReporter,
     options: &SyncOptions,
 ) -> DownloadTotals {
@@ -386,7 +395,7 @@ async fn download_all<C: HttpClient>(
                         total_to_download,
                     };
                     let attempt = AssertUnwindSafe(download_planned(
-                        client, &planned, state, &context, reporter,
+                        client, &planned, state, feed_guids, &context, reporter,
                     ))
                     .catch_unwind()
                     .await;
@@ -453,6 +462,7 @@ async fn download_planned<C: HttpClient>(
     client: &C,
     planned: &PlannedDownload,
     state: &OutputState,
+    feed_guids: &HashSet<String>,
     context: &DownloadContext,
     reporter: &SharedProgressReporter,
 ) -> Result<Placed, String> {
@@ -466,12 +476,14 @@ async fn download_planned<C: HttpClient>(
         .await
         .map_err(|e| e.to_string())?;
 
-    // A new GUID for audio stored byte for byte, as when a feed re-issues
-    // its episodes, adds that GUID to the stored episode instead of a copy.
-    // A repair is excluded: it is meant to replace its file.
+    // An entry re-issued under a new GUID with audio stored byte for byte
+    // adds that GUID to the stored episode instead of a copy. Every other
+    // entry is an episode of its own, even with the same audio. A repair is
+    // excluded: it is meant to replace its file.
     if !planned.replaces_existing
         && let Some(guid) = &episode.guid
         && let Some(stored) = state.stored_episode_with_content_hash(staged_audio.content_hash())
+        && stored.is_replaced_by(episode, feed_guids)
         && stored_audio_still_matches(output_dir, stored, staged_audio.content_hash()).await
     {
         staged_audio.discard().await;
@@ -1792,6 +1804,7 @@ mod tests {
             &client_for(&[NOMAD_ORIGINAL]),
             planned,
             &OutputState::empty(dir),
+            &HashSet::new(),
             &context,
             &NoopReporter::shared(),
         )
@@ -2124,18 +2137,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_settles_one_file_listed_under_two_live_guids() {
+    async fn sync_keeps_identical_audio_of_two_listed_entries_apart() {
         let dir = tempdir().unwrap();
         store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
 
-        sync_recording(dir.path(), &[NOMAD_ORIGINAL, REISSUED]).await;
-        let (result, _) = sync_recording(dir.path(), &[NOMAD_ORIGINAL, REISSUED]).await;
+        // Both entries are in the feed at the same time, so they are two
+        // episodes even though their audio is the same.
+        let (first, _) = sync_recording(dir.path(), &[NOMAD_ORIGINAL, REISSUED]).await;
+        let (second, _) = sync_recording(dir.path(), &[NOMAD_ORIGINAL, REISSUED]).await;
 
-        // Both GUIDs stay recorded, so neither is fetched again.
-        assert_eq!(result.downloaded, 0);
+        assert_eq!(first.downloaded, 1);
+        assert_eq!(first.adopted, 0);
+        assert_eq!(audio_files(dir.path()).len(), 2);
+        assert_eq!(second.downloaded, 0);
+        assert_eq!(second.skipped, 2);
+    }
+
+    #[tokio::test]
+    async fn sync_keeps_identical_audio_of_a_retitled_entry_apart() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        let rerun = FeedItem {
+            title: "Best of: Sega Nomad",
+            ..REISSUED
+        };
+
+        let (result, _) = sync_recording(dir.path(), &[rerun]).await;
+
+        assert_eq!(result.downloaded, 1);
         assert_eq!(result.adopted, 0);
-        assert_eq!(result.skipped, 2);
-        assert_eq!(audio_files(dir.path()).len(), 1);
     }
 
     #[tokio::test]

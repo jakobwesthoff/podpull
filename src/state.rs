@@ -164,6 +164,27 @@ pub struct StoredEpisode {
     pub content_hash: Option<String>,
 }
 
+impl StoredEpisode {
+    /// Whether `episode` is this stored episode re-issued under a new GUID
+    ///
+    /// A feed entry that replaced this one makes all of its GUIDs disappear
+    /// from the feed. Title and exact publication time must stay the same,
+    /// so that another entry with the same audio, such as a rerun listed
+    /// after the original dropped out of a feed that keeps only its newest
+    /// episodes, is not taken for it.
+    pub fn is_replaced_by(&self, episode: &Episode, feed_guids: &HashSet<String>) -> bool {
+        let still_listed = self
+            .guid
+            .iter()
+            .chain(&self.additional_guids)
+            .any(|guid| feed_guids.contains(guid));
+        !still_listed
+            && self.title == episode.title
+            && self.pub_date.is_some()
+            && self.pub_date == episode.pub_date
+    }
+}
+
 /// An episode scheduled for download, with the files it is written to
 ///
 /// Audio and metadata share one stem, so a plan cannot pair the audio of
@@ -218,6 +239,8 @@ pub struct SyncPlan {
     pub total_episodes: usize,
     /// Number of episodes not yet downloaded, before the limit
     pub new_episodes: usize,
+    /// GUIDs of all episodes in the feed
+    pub feed_guids: HashSet<String>,
     /// Stored episodes whose base filename a download in this run would
     /// have taken, each listed once
     ///
@@ -435,6 +458,10 @@ pub fn create_sync_plan(
     });
 
     let total_episodes = episodes.len();
+    let feed_guids = episodes
+        .iter()
+        .filter_map(|episode| episode.guid.clone())
+        .collect();
     let mut to_download = Vec::new();
     let mut already_present = Vec::new();
 
@@ -495,6 +522,7 @@ pub fn create_sync_plan(
         already_present,
         total_episodes,
         new_episodes,
+        feed_guids,
         collisions,
     }
 }
@@ -1350,6 +1378,70 @@ mod tests {
         let plan = plan_for_rotated_token(stored, episode);
 
         assert_eq!(plan.to_download.len(), 1);
+    }
+
+    fn feed_guids(guids: &[&str]) -> HashSet<String> {
+        guids.iter().map(|guid| guid.to_string()).collect()
+    }
+
+    fn stored_nomad() -> StoredEpisode {
+        StoredEpisode {
+            pub_date: make_time(EPISODE_TIME),
+            ..stored("2024-12-19-Sega Nomad", "Sega Nomad", "old-guid")
+        }
+    }
+
+    #[test]
+    fn stored_episode_is_replaced_by_entry_taking_its_place() {
+        let reissued =
+            make_episode_with_date("Sega Nomad", Some("new-guid"), make_time(EPISODE_TIME));
+
+        assert!(stored_nomad().is_replaced_by(&reissued, &feed_guids(&["new-guid"])));
+    }
+
+    #[test]
+    fn stored_episode_still_in_feed_is_not_replaced() {
+        let reissued =
+            make_episode_with_date("Sega Nomad", Some("new-guid"), make_time(EPISODE_TIME));
+
+        assert!(!stored_nomad().is_replaced_by(&reissued, &feed_guids(&["new-guid", "old-guid"])));
+    }
+
+    #[test]
+    fn stored_episode_is_not_replaced_by_entry_still_naming_an_additional_guid() {
+        let stored = StoredEpisode {
+            additional_guids: vec!["alias-guid".to_string()],
+            ..stored_nomad()
+        };
+        let reissued =
+            make_episode_with_date("Sega Nomad", Some("new-guid"), make_time(EPISODE_TIME));
+
+        assert!(!stored.is_replaced_by(&reissued, &feed_guids(&["new-guid", "alias-guid"])));
+    }
+
+    #[test]
+    fn stored_episode_is_not_replaced_by_entry_with_other_title_or_time() {
+        let retitled = make_episode_with_date("Best of", Some("new-guid"), make_time(EPISODE_TIME));
+        let moved = make_episode_with_date(
+            "Sega Nomad",
+            Some("new-guid"),
+            make_time("Fri, 20 Dec 2024 10:25:22 +0000"),
+        );
+        let guids = feed_guids(&["new-guid"]);
+
+        assert!(!stored_nomad().is_replaced_by(&retitled, &guids));
+        assert!(!stored_nomad().is_replaced_by(&moved, &guids));
+    }
+
+    #[test]
+    fn stored_episode_without_publication_time_is_never_replaced() {
+        let stored = StoredEpisode {
+            pub_date: None,
+            ..stored_nomad()
+        };
+        let undated = make_episode_with_date("Sega Nomad", Some("new-guid"), None);
+
+        assert!(!stored.is_replaced_by(&undated, &feed_guids(&["new-guid"])));
     }
 
     #[test]
