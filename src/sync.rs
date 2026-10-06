@@ -754,4 +754,42 @@ mod tests {
             "2024-12-19-102522-SFT Bits Sega Nomad.mp3"
         );
     }
+
+    #[tokio::test]
+    async fn sync_keeps_earlier_download_when_feed_changes_guid() {
+        let dir = tempdir().unwrap();
+        let before = FeedItem {
+            guid: "nomad-before-migration",
+            ..NOMAD_ORIGINAL
+        };
+        let after = FeedItem {
+            guid: "nomad-after-migration",
+            ..NOMAD_ORIGINAL
+        };
+        store_episode(
+            dir.path(),
+            "2024-12-19-SFT Bits Sega Nomad",
+            &before,
+            b"audio before migration",
+        );
+
+        // Title and publication time alone cannot prove that the new GUID
+        // names the same episode, so the earlier file must survive.
+        let result = sync_with(dir.path(), &client_for(&[after]), &SyncOptions::default()).await;
+
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(
+            std::fs::read(dir.path().join("2024-12-19-SFT Bits Sega Nomad.mp3")).unwrap(),
+            b"audio before migration"
+        );
+        let recorded = recorded_episodes(dir.path());
+        assert_eq!(
+            recorded["nomad-before-migration"],
+            "2024-12-19-SFT Bits Sega Nomad.mp3"
+        );
+        assert_eq!(
+            recorded["nomad-after-migration"],
+            "2024-12-19-102522-SFT Bits Sega Nomad.mp3"
+        );
+    }
 }
