@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::damage::DamageRemedy;
+use crate::damage::{DamageKind, DamageRemedy};
 
 /// Events emitted during podcast synchronization for progress reporting
 #[derive(Debug, Clone)]
@@ -107,18 +107,11 @@ pub enum ProgressEvent {
     },
 
     /// An existing audio file no longer matches the hash recorded when it
-    /// was downloaded
-    StoredAudioMismatch {
+    /// was downloaded, or the directory no longer lists it
+    StoredAudioDamaged {
         episode_title: String,
         audio_filename: String,
-        remedy: DamageRemedy,
-    },
-
-    /// The directory no longer lists the audio file an episode's metadata
-    /// names
-    StoredAudioMissing {
-        episode_title: String,
-        audio_filename: String,
+        kind: DamageKind,
         remedy: DamageRemedy,
     },
 
@@ -236,16 +229,11 @@ mod tests {
             error: "EOF while parsing".to_string(),
         });
 
-        reporter.report(ProgressEvent::StoredAudioMismatch {
+        reporter.report(ProgressEvent::StoredAudioDamaged {
             episode_title: "Episode 1".to_string(),
             audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
+            kind: DamageKind::Mismatch,
             remedy: DamageRemedy::RepairAvailable,
-        });
-
-        reporter.report(ProgressEvent::StoredAudioMissing {
-            episode_title: "Episode 2".to_string(),
-            audio_filename: "2024-01-16-Episode 2.mp3".to_string(),
-            remedy: DamageRemedy::NoFeedEpisode,
         });
 
         reporter.report(ProgressEvent::VerifyingStoredAudio {

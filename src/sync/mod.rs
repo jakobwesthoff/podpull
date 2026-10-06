@@ -818,9 +818,10 @@ mod tests {
         events
             .iter()
             .filter_map(|event| match event {
-                ProgressEvent::StoredAudioMismatch {
+                ProgressEvent::StoredAudioDamaged {
                     episode_title,
                     audio_filename,
+                    kind: DamageKind::Mismatch,
                     remedy,
                 } => Some((episode_title.clone(), audio_filename.clone(), *remedy)),
                 _ => None,
@@ -965,7 +966,8 @@ mod tests {
         assert_eq!(result.damaged, vec![missing(DamageRemedy::RepairAvailable)]);
         assert!(events.iter().any(|event| matches!(
             event,
-            ProgressEvent::StoredAudioMissing {
+            ProgressEvent::StoredAudioDamaged {
+                kind: DamageKind::Missing,
                 remedy: DamageRemedy::RepairAvailable,
                 ..
             }

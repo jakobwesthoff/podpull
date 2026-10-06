@@ -102,19 +102,11 @@ pub(super) async fn verify_stored_audio(
             Some(_) if repair => DamageRemedy::Repairing,
             Some(_) => DamageRemedy::RepairAvailable,
         };
-        let episode_title = stored.title.clone();
-        let audio_filename = stored.audio_filename.clone();
-        reporter.report(match kind {
-            DamageKind::Missing => ProgressEvent::StoredAudioMissing {
-                episode_title,
-                audio_filename,
-                remedy,
-            },
-            DamageKind::Mismatch => ProgressEvent::StoredAudioMismatch {
-                episode_title,
-                audio_filename,
-                remedy,
-            },
+        reporter.report(ProgressEvent::StoredAudioDamaged {
+            episode_title: stored.title.clone(),
+            audio_filename: stored.audio_filename.clone(),
+            kind,
+            remedy,
         });
 
         if let Some(guid) = target

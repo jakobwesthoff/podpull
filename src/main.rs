@@ -307,32 +307,15 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            ProgressEvent::StoredAudioMismatch {
+            ProgressEvent::StoredAudioDamaged {
                 episode_title,
                 audio_filename,
+                kind,
                 remedy,
             } => {
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    damage_message(
-                        &episode_title,
-                        &audio_filename,
-                        DamageKind::Mismatch,
-                        remedy
-                    )
-                    .yellow()
-                ));
-            }
-
-            ProgressEvent::StoredAudioMissing {
-                episode_title,
-                audio_filename,
-                remedy,
-            } => {
-                let _ = self.multi.println(format!(
-                    "{WARNING}{}",
-                    damage_message(&episode_title, &audio_filename, DamageKind::Missing, remedy)
-                        .yellow()
+                    damage_message(&episode_title, &audio_filename, kind, remedy).yellow()
                 ));
             }
 
@@ -723,9 +706,10 @@ mod tests {
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
             error: "Permission denied".to_string(),
         });
-        reporter.report(ProgressEvent::StoredAudioMismatch {
+        reporter.report(ProgressEvent::StoredAudioDamaged {
             episode_title: "Sega Nomad".to_string(),
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+            kind: DamageKind::Mismatch,
             remedy: DamageRemedy::Repairing,
         });
         reporter.report(ProgressEvent::EpisodeAlreadyStored {
