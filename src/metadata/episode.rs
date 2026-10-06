@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,17 @@ pub fn write_episode_metadata(
 ) -> Result<(), MetadataError> {
     let metadata = EpisodeMetadata::from_episode(episode, audio_filename, content_hash);
     let json = serde_json::to_string_pretty(&metadata)?;
-    std::fs::write(path, json).map_err(|e| MetadataError::WriteFailed {
+
+    // A metadata file cut short by an interruption would leave its episode
+    // without a readable GUID while still occupying the name. Writing to a
+    // partial file first, which the next directory scan removes, and renaming
+    // it into place means the metadata file is either complete or untouched.
+    let partial_path = PathBuf::from(format!("{}.partial", path.display()));
+    std::fs::write(&partial_path, json).map_err(|e| MetadataError::WriteFailed {
+        path: partial_path.clone(),
+        source: e,
+    })?;
+    std::fs::rename(&partial_path, path).map_err(|e| MetadataError::WriteFailed {
         path: path.to_path_buf(),
         source: e,
     })
@@ -149,6 +159,53 @@ mod tests {
         assert_eq!(read_back.audio_filename, "test.mp3");
         assert_eq!(read_back.guid, Some("test-guid-123".to_string()));
         assert_eq!(read_back.content_hash, Some("sha256:abc123".to_string()));
+    }
+
+    #[test]
+    fn write_replaces_existing_metadata_without_leftovers() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+        std::fs::write(&path, "previous content").unwrap();
+
+        write_episode_metadata(&make_episode(), "test.mp3", None, &path).unwrap();
+
+        assert_eq!(read_episode_metadata(&path).unwrap().title, "Test Episode");
+        assert!(!dir.path().join("episode.json.partial").exists());
+    }
+
+    #[test]
+    fn failed_write_leaves_existing_metadata_intact() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+        let previous = r#"{"title":"Previous"}"#;
+        std::fs::write(&path, previous).unwrap();
+
+        // A directory in place of the partial file makes the write fail
+        // before the existing metadata could be touched.
+        std::fs::create_dir(dir.path().join("episode.json.partial")).unwrap();
+
+        let result = write_episode_metadata(&make_episode(), "test.mp3", None, &path);
+
+        assert!(matches!(result, Err(MetadataError::WriteFailed { .. })));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), previous);
+    }
+
+    #[test]
+    fn failed_rename_reports_the_metadata_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+
+        // A non-empty directory at the target path cannot be replaced by
+        // renaming a file onto it.
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("occupant"), b"").unwrap();
+
+        let result = write_episode_metadata(&make_episode(), "test.mp3", None, &path);
+
+        match result {
+            Err(MetadataError::WriteFailed { path: failed, .. }) => assert_eq!(failed, path),
+            other => panic!("Expected WriteFailed, got {other:?}"),
+        }
     }
 
     #[test]
