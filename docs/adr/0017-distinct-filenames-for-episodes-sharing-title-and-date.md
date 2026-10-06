@@ -10,7 +10,7 @@ Amends [13. Library public API design](0013-library-public-api-design.md)
 
 ## Context
 
-An episode's filename is built from its publication date and sanitized title: `YYYY-MM-DD-<title>.<ext>`, with its metadata in `YYYY-MM-DD-<title>.json`. Feeds can contain distinct episodes, with different GUIDs and enclosures, that share title and publication day. The Stay Forever supporter feed has two such pairs: "SFT Bits: Sega Nomad" (2024-12-19, published 10:25:22 and 10:45:35 GMT) and "Neuzugänge #4" (2019-12-27, published 09:29:26 and 10:12:15 GMT).
+An episode's filename is built from its publication date and sanitized title: `YYYY-MM-DD-<title>.<ext>`, with its metadata in `YYYY-MM-DD-<title>.json`. Feeds can contain distinct episodes, with different GUIDs and enclosures, that share title and publication day. For example, a feed may list two episodes titled "Listener Questions", both published on 2024-01-08, one at 09:30:00 and one at 10:15:00.
 
 Up to version 1.1.2 both episodes of such a pair were given the same filename:
 
