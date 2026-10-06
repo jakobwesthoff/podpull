@@ -14,7 +14,7 @@ use crate::episode::{DownloadContext, filename_claim_key, hash_file, stage_downl
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
-use crate::state::{OutputState, PlannedDownload, StoredEpisode};
+use crate::state::{OutputState, PlannedDownload, Purpose, StoredEpisode};
 
 /// What became of one planned download
 pub(super) enum DownloadOutcome {
@@ -112,7 +112,9 @@ pub(super) async fn download_all<C: HttpClient>(
                     .await;
 
                     let error = match attempt {
-                        Ok(Ok(Placed::Downloaded)) if planned.replaces_existing => {
+                        Ok(Ok(Placed::Downloaded))
+                            if matches!(planned.purpose, Purpose::Repair { .. }) =>
+                        {
                             return (title, DownloadOutcome::Repaired);
                         }
                         Ok(Ok(Placed::Downloaded)) => return (title, DownloadOutcome::Downloaded),
@@ -192,8 +194,7 @@ pub(super) async fn download_planned<C: HttpClient>(
 
     // An entry re-issued under a new GUID with audio stored byte for byte
     // adds that GUID to the stored episode instead of a copy. Every other
-    // entry is an episode of its own, even with the same audio. The plan
-    // names no candidates for a repair, which is meant to replace its file.
+    // entry is an episode of its own, even with the same audio.
     if let Some(guid) = &episode.guid
         && let Some(stored) =
             replaced_with_identical_audio(output_dir, planned, staged_audio.content_hash(), intact)
@@ -219,7 +220,9 @@ pub(super) async fn download_planned<C: HttpClient>(
             &audio_filename,
             Some(staged_audio.content_hash().to_string()),
         );
-        metadata.additional_guids = planned.kept_guids.clone();
+        if let Purpose::Repair { kept_guids } = &planned.purpose {
+            metadata.additional_guids = kept_guids.clone();
+        }
         blocking(move || metadata.stage(&metadata_path)).await?
     };
     let staged_metadata = match staged_metadata {
@@ -243,7 +246,7 @@ pub(super) async fn download_planned<C: HttpClient>(
         // A fresh download owns its name, so its audio goes again. A repair
         // replaced audio that the existing metadata still names; removing it
         // would leave that metadata without audio.
-        if !planned.replaces_existing
+        if matches!(planned.purpose, Purpose::NewEpisode { .. })
             && let Err(remove_error) = remove_audio(output_dir, &audio_filename).await
         {
             error.push_str(&format!(
@@ -332,7 +335,13 @@ pub(super) async fn replaced_with_identical_audio<'a>(
     content_hash: &str,
     intact: &HashSet<String>,
 ) -> Option<&'a StoredEpisode> {
-    for stored in &planned.replaced_candidates {
+    let Purpose::NewEpisode {
+        replaced_candidates,
+    } = &planned.purpose
+    else {
+        return None;
+    };
+    for stored in replaced_candidates {
         if stored.content_hash.as_deref() == Some(content_hash)
             && (intact.contains(&stored.audio_filename)
                 || stored_audio_still_matches(output_dir, stored, content_hash).await)

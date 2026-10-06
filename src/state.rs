@@ -175,35 +175,29 @@ pub struct PlannedDownload {
     /// Name of both files inside the output directory, without extension
     pub stem: String,
     pub audio_extension: String,
-    /// Whether the download replaces audio of an episode already stored
-    /// under these names, as a repair does
-    pub replaces_existing: bool,
-    /// Stored episodes the feed entry may have replaced, in audio filename
-    /// order; downloaded audio identical to one of them is recorded there
-    /// instead of stored again
-    pub(crate) replaced_candidates: Vec<StoredEpisode>,
-    /// GUIDs besides the episode's own that its metadata keeps recording,
-    /// as a repair keeps those of the episode it replaces
-    pub(crate) kept_guids: Vec<String>,
+    pub purpose: Purpose,
+}
+
+/// Why an episode is downloaded
+#[derive(Debug, Clone)]
+pub enum Purpose {
+    /// The episode is not stored yet
+    NewEpisode {
+        /// Stored episodes the feed entry may have replaced, in audio
+        /// filename order; downloaded audio identical to one of them is
+        /// recorded there instead of stored again
+        replaced_candidates: Vec<StoredEpisode>,
+    },
+    /// The download replaces damaged or missing audio of an episode stored
+    /// under these names
+    Repair {
+        /// GUIDs besides the episode's own that the metadata keeps
+        /// recording, those of the episode it replaces
+        kept_guids: Vec<String>,
+    },
 }
 
 impl PlannedDownload {
-    /// Plan a fresh download of `episode` under `stem`
-    pub fn new(
-        episode: Episode,
-        stem: impl Into<String>,
-        audio_extension: impl Into<String>,
-    ) -> Self {
-        Self {
-            episode,
-            stem: stem.into(),
-            audio_extension: audio_extension.into(),
-            replaces_existing: false,
-            replaced_candidates: Vec::new(),
-            kept_guids: Vec::new(),
-        }
-    }
-
     /// Name of the audio file inside the output directory
     pub fn audio_filename(&self) -> String {
         format!("{}.{}", self.stem, self.audio_extension)
@@ -522,8 +516,12 @@ pub fn create_sync_plan(
             let stem = generate_unique_filename_stem(&episode, &claimed_keys);
             claimed_keys.insert(filename_claim_key(&stem));
             PlannedDownload {
-                replaced_candidates: replaced_candidates(&episode, state, &feed_guids),
-                ..PlannedDownload::new(episode.clone(), stem, get_audio_extension(&episode))
+                purpose: Purpose::NewEpisode {
+                    replaced_candidates: replaced_candidates(&episode, state, &feed_guids),
+                },
+                audio_extension: get_audio_extension(&episode),
+                stem,
+                episode,
             }
         })
         .collect();
@@ -1525,8 +1523,13 @@ mod tests {
         // Only stored episodes that left the feed with title and time
         // unchanged and recorded a hash qualify, every copy of them in name
         // order.
-        let candidates: Vec<_> = plan.to_download[0]
-            .replaced_candidates
+        let Purpose::NewEpisode {
+            replaced_candidates,
+        } = &plan.to_download[0].purpose
+        else {
+            panic!("a planned download of the feed is a new episode");
+        };
+        let candidates: Vec<_> = replaced_candidates
             .iter()
             .map(|stored| stored.audio_filename.as_str())
             .collect();

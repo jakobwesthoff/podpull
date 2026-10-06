@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::damage::{DamageKind, DamageRemedy, DamagedAudio};
 use crate::episode::{get_audio_extension, hash_file};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
-use crate::state::{CheckTarget, PlannedDownload};
+use crate::state::{CheckTarget, PlannedDownload, Purpose};
 
 /// Outcome of checking stored audio against its recorded hashes
 pub(super) struct Verification {
@@ -129,11 +129,12 @@ pub(super) async fn verify_stored_audio(
                     .cloned()
                     .collect();
                 verification.repairs.push(PlannedDownload {
-                    replaces_existing: true,
-                    kept_guids,
+                    episode: episode.clone(),
+                    stem: stored.stem().to_string(),
                     // The stored spelling keeps the download on the very
                     // file it replaces.
-                    ..PlannedDownload::new(episode.clone(), stored.stem(), stored_extension)
+                    audio_extension: stored_extension,
+                    purpose: Purpose::Repair { kept_guids },
                 })
             }
             _ => verification.damaged.push(DamagedAudio {

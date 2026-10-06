@@ -240,7 +240,7 @@ mod tests {
     use crate::damage::{DamageKind, DamageRemedy};
     use crate::episode::{DownloadContext, hash_file};
     use crate::metadata::write_episode_metadata;
-    use crate::state::{OutputState, PlannedDownload};
+    use crate::state::{OutputState, PlannedDownload, Purpose};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1338,16 +1338,29 @@ mod tests {
     // Finalizing a single download
     // =========================================================
 
-    fn planned_nomad(replaces_existing: bool) -> PlannedDownload {
+    fn planned_nomad(purpose: Purpose) -> PlannedDownload {
         let feed = crate::feed::parse_feed(
             feed_xml(&[NOMAD_ORIGINAL]).as_bytes(),
             url::Url::parse("https://example.com/feed.xml").unwrap(),
         )
         .unwrap();
-        let planned = PlannedDownload::new(feed.episodes[0].clone(), NOMAD_STEM, "mp3");
         PlannedDownload {
-            replaces_existing,
-            ..planned
+            episode: feed.episodes[0].clone(),
+            stem: NOMAD_STEM.to_string(),
+            audio_extension: "mp3".to_string(),
+            purpose,
+        }
+    }
+
+    fn new_episode() -> Purpose {
+        Purpose::NewEpisode {
+            replaced_candidates: Vec::new(),
+        }
+    }
+
+    fn repair() -> Purpose {
+        Purpose::Repair {
+            kept_guids: Vec::new(),
         }
     }
 
@@ -1381,7 +1394,7 @@ mod tests {
     async fn download_planned_writes_audio_and_metadata() {
         let dir = tempdir().unwrap();
 
-        download_one(dir.path(), &planned_nomad(false))
+        download_one(dir.path(), &planned_nomad(new_episode()))
             .await
             .unwrap();
 
@@ -1396,7 +1409,7 @@ mod tests {
         let dir = tempdir().unwrap();
         block_metadata_path(dir.path());
 
-        let error = download_one(dir.path(), &planned_nomad(false))
+        let error = download_one(dir.path(), &planned_nomad(new_episode()))
             .await
             .unwrap_err();
 
@@ -1416,7 +1429,7 @@ mod tests {
 
         // A repair replaced audio that the existing metadata still names, so
         // removing it would leave that metadata without its audio.
-        let error = download_one(dir.path(), &planned_nomad(true))
+        let error = download_one(dir.path(), &planned_nomad(repair()))
             .await
             .unwrap_err();
 
@@ -1434,7 +1447,7 @@ mod tests {
         std::fs::create_dir(&audio_path).unwrap();
         std::fs::write(audio_path.join("occupant"), b"").unwrap();
 
-        download_one(dir.path(), &planned_nomad(false))
+        download_one(dir.path(), &planned_nomad(new_episode()))
             .await
             .unwrap_err();
 
@@ -1856,8 +1869,9 @@ mod tests {
             .unwrap()
             .clone();
         let hash = candidate.content_hash.clone().unwrap();
-        let mut planned = planned_nomad(false);
-        planned.replaced_candidates = vec![candidate];
+        let planned = planned_nomad(Purpose::NewEpisode {
+            replaced_candidates: vec![candidate],
+        });
         (planned, hash)
     }
 
