@@ -37,7 +37,8 @@ podpull <FEED_URL> [OPTIONS]
 | `-c, --concurrent <N>` | 3 | Maximum concurrent downloads |
 | `-l, --limit <N>` | — | Only download the N most recent undownloaded episodes |
 | `-q, --quiet` | — | Suppress progress output |
-| `--repair` | — | Download an existing episode again when its audio fails the collision check (see Error Handling) |
+| `--verify` | — | Check every downloaded audio file against its recorded hash and report damaged ones (reads the whole archive) |
+| `--repair` | — | Like `--verify`, and download damaged episodes still in the feed again under their existing filenames |
 | `-h, --help` | — | Print help |
 | `-V, --version` | — | Print version |
 
@@ -68,10 +69,11 @@ Feed-level metadata in `podcast.json`:
 {
   "title": "My Favorite Podcast",
   "description": "A podcast about interesting things",
-  "author": "Podcast Author",
   "link": "https://example.com/podcast",
+  "author": "Podcast Author",
+  "image_url": "https://example.com/podcast/cover.jpg",
   "feed_url": "https://example.com/podcast/feed.xml",
-  "last_synced": "2024-01-15T10:30:00Z"
+  "updated_at": "2024-01-15T10:30:00.123456+00:00"
 }
 ```
 
@@ -79,16 +81,21 @@ Episode metadata alongside each audio file:
 
 ```json
 {
-  "guid": "episode-unique-id-123",
   "title": "Episode Title",
-  "published": "2024-01-15T08:00:00Z",
-  "url": "https://example.com/episode.mp3",
-  "content_hash": "sha256:abc123...",
-  "downloaded_at": "2024-01-15T10:30:00Z"
+  "description": "What this episode is about",
+  "pub_date": "2024-01-15T08:00:00+00:00",
+  "guid": "episode-unique-id-123",
+  "original_url": "https://example.com/episode.mp3",
+  "downloaded_at": "2024-01-15T10:30:00.234567+00:00",
+  "duration": "45:12",
+  "episode_number": 42,
+  "season_number": 3,
+  "audio_filename": "2024-01-15-Episode Title.mp3",
+  "content_hash": "sha256:9f86d0..."
 }
 ```
 
-The `content_hash` is a SHA-256 hash of the downloaded file, useful for verifying integrity or detecting if a file was modified.
+Fields the feed does not provide are left out. The `content_hash` is a SHA-256 hash of the downloaded audio; `--verify` and `--repair` check the files against it.
 
 ### How It Works
 
@@ -115,6 +122,8 @@ podpull identifies episodes using their **GUID** (a unique identifier from the R
 > **When Re-downloads Might Happen**
 >
 > If a podcast host changes their feed URL structure without preserving GUIDs, episodes may be re-downloaded. This is uncommon but can happen during podcast platform migrations. The earlier files are kept; a re-downloaded episode whose title and date did not change is stored next to them with its publication time in the filename.
+>
+> A feed without GUIDs is an exception for one common case: private feeds that put an access token into their audio URLs. When only the token changed, an episode with the same title, the same publication time to the second, and the same file name at the end of its URL counts as already downloaded.
 
 ### Safe Downloads
 
@@ -123,8 +132,10 @@ podpull uses atomic downloads to ensure file integrity:
 - Episodes download to a temporary `.partial` file first
 - A SHA-256 hash is computed during download and stored in the metadata
 - Only when the download completes successfully is the file renamed to its final name
-- Episode metadata is written the same way, through a `.partial` file that is renamed into place
-- If a download is interrupted, the `.partial` file is automatically cleaned up on the next sync
+- Episode metadata is written to its own `.partial` file before the audio is renamed, then renamed right after it; `podcast.json` goes through a `.partial` file as well
+- Both are synced to disk before they are renamed
+- If the metadata cannot be written, the audio of a new download is removed again, so no audio is left without metadata
+- If a download is interrupted, the `.partial` files are automatically cleaned up on the next sync; a `.partial` file that cannot be removed is reported, and its episode cannot be downloaded until it is deleted
 
 This means you'll never have corrupted files from interrupted downloads, and you can safely run podpull repeatedly.
 
@@ -133,18 +144,19 @@ This means you'll never have corrupted files from interrupted downloads, and you
 When individual episodes fail to download (network errors, 404s, etc.), podpull continues with the remaining episodes. At the end, failed episodes are listed:
 
 ```bash
-Downloaded 47 of 50 episodes
+🎉 Sync complete: 47 downloaded, 120 existing, 3 failed
+
 Failed episodes:
-  - Episode 23: Connection timeout
-  - Episode 38: HTTP 404 Not Found
-  - Episode 41: HTTP 503 Service Unavailable
+  ✗ Episode 23 - HTTP error 503 for https://example.com/episode-23.mp3
+  ✗ Episode 38 - HTTP error 404 for https://example.com/episode-38.mp3
+  ✗ Episode 41 - HTTP error 404 for https://example.com/episode-41.mp3
 ```
 
-Use `-q` (quiet mode) to suppress progress output but still see the final summary.
+Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes are still listed, on stderr.
 
-When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. A mismatch is listed among the failed episodes; the file itself is left untouched. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch. Delete the reported audio file and its `.json` file to download the episode again, or run with `--repair`: podpull then downloads the episode again under its existing filename, provided it is still in the feed. Without `--repair` the file is never replaced, because audio tags edited after the download also cause a mismatch.
+**Damaged audio.** When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. If the last sync with podpull 1.1.2 or earlier downloaded two episodes sharing title and date at the same time, that file holds bytes of both and fails this check. `--verify` runs the same check on every audio file in the directory, which reads the whole archive. A mismatch is listed under "Damaged episodes" and the file is left untouched, because audio tags edited after the download cause a mismatch as well. `--repair` downloads a damaged episode again under its existing filename, provided it is still in the feed in the same audio format; otherwise the list says why it cannot be repaired. Deleting the audio file and its `.json` file also makes the next sync download the episode again.
 
-Episode metadata files that cannot be read are reported as warnings. Their names stay reserved, so if the episode they belonged to is still in the feed, it is downloaded again under a new name.
+**Unreadable metadata.** An episode metadata file whose content is not valid metadata is reported as a warning with the reason. Its name stays reserved, so if the episode it belonged to is still in the feed, it is downloaded again under a new name. If a metadata file cannot be read from disk at all, for example because a network share dropped the connection, the sync stops with an error instead, and the next run tries again.
 
 ### Exit Codes
 
@@ -154,6 +166,7 @@ podpull returns meaningful exit codes for scripting:
 |-----------|---------|
 | `0` | Success (episodes downloaded or already up to date) |
 | `1` | Failure (no episodes downloaded and at least one failure occurred) |
+| `2` | Partial failure (some downloads failed or damaged audio was found, but the run got something done) |
 
 ### Examples
 
@@ -226,7 +239,9 @@ podpull -c 8 https://example.com/feed.xml ~/Podcasts/show/
 
 ### Limitations
 
-**Episodes without GUIDs:** Some RSS feeds don't include GUIDs for episodes. In this case, podpull uses the episode's download URL as a fallback identifier. This works fine unless the podcast host changes URLs (CDN migrations, hosting changes, etc.) — then those episodes will be re-downloaded since they appear as "new" episodes with different identifiers.
+**Episodes without GUIDs:** Some RSS feeds don't include GUIDs for episodes. In this case, podpull uses the episode's download URL as a fallback identifier. This works fine unless the podcast host changes URLs (CDN migrations, hosting changes, etc.) — then those episodes will be re-downloaded since they appear as "new" episodes with different identifiers. A changed access token in the URL is the exception described under "When Re-downloads Might Happen".
+
+**One sync per directory at a time:** Two podpull runs on the same output directory at once, for example overlapping cron jobs, are not supported. Each run's scan removes the other run's `.partial` files, which can leave a broken download behind.
 
 **Feed quirks:** RSS is a "standard" in the same way that HTML was a standard in 2003 — everyone does it slightly differently. podpull handles the common cases and iTunes podcast extensions, but exotic feeds might not parse perfectly.
 <!-- docs:end -->

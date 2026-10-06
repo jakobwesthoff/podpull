@@ -11,18 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- When a new episode would take the name of an existing file, that file is checked against the hash recorded when it was downloaded. A mismatch is listed among the failed episodes. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch; delete the reported audio file and its `.json` file to download the episode again
-- `--repair` option: downloads an episode whose audio fails that check again under its existing filename, provided it is still in the feed
+- Before downloading an episode whose usual filename is taken, podpull checks the existing audio file against the hash recorded when it was downloaded and lists a mismatch under "Damaged episodes"
+- `--verify` option: checks every downloaded audio file against its recorded hash and lists mismatches; reads the whole archive
+- `--repair` option: like `--verify`, and downloads damaged episodes again under their existing filenames, provided they are still in the feed in the same audio format
+- Exit code 2 when some downloads failed or damaged audio was found but the run got something done
 
 ### Fixed
 
-- Episodes that share a title and publication date no longer overwrite each other or get downloaded again on every sync. One keeps the usual filename; the other gets its publication time added, for example `2024-01-08-093000-Listener Questions.mp3`
+- Episodes that share a title and publication date no longer overwrite each other or get downloaded again on every sync. One keeps the usual filename; the other gets its publication time added, for example `2024-01-08-093000-Listener Questions.mp3`. If the last sync with podpull 1.1.2 or earlier downloaded both at the same time, the file holds bytes of both; the check above reports it, and `--repair` or deleting the file and its `.json` file downloads it again
 - New episodes no longer overwrite existing files whose names differ only in letter case or in Unicode normalization, such as names with umlauts listed by network shares mounted on macOS
 - New episodes no longer overwrite audio files that have no readable metadata. If such a file belongs to the episode being downloaded, the episode is stored a second time under a new name
+- An episode listed twice under the same GUID is downloaded once
+- In feeds without GUIDs, an episode is no longer downloaded again when only an access token in its URL changed and title, publication time and file name stay the same
+- If an episode's metadata cannot be written, its freshly downloaded audio is removed again instead of being left without metadata, which made the next sync store the episode a second time
+- Quiet mode (`-q`) lists failed and damaged episodes on stderr instead of hiding them
 
 ### Changed
 
-- Episode metadata files that cannot be read are now reported as a warning instead of being skipped silently
+- Downloaded audio, episode metadata and `podcast.json` are written to `.partial` files, synced to disk and then renamed into place
+- Episode metadata files that hold no valid metadata are reported as a warning with the reason instead of being skipped silently. A metadata file that cannot be read from disk at all stops the sync with an error
+- Leftover `.partial` files that cannot be removed are reported, and a download into such a path fails with a message to delete the file
+- The status line shows repairs apart from the episode limit
+- Library: `create_sync_plan` takes the limit and lists collisions; `PlannedDownload` carries the filenames; `OutputState` is read through methods; `SyncOptions`, `SyncResult`, `ProgressEvent` and the new plan types are `#[non_exhaustive]`; `sync_podcast` accepts clients that are neither `Clone` nor `'static`; `continue_on_error: false` stops starting downloads after the first failure; `generate_filename` is deprecated
 
 ## [1.1.2] - 2026-02-01
 
