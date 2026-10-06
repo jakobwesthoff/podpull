@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-06
+
 ### Added
 
 - When a new episode would take the name of an existing file, that file is checked against the hash recorded when it was downloaded. A mismatch is listed among the failed episodes. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch; delete the reported audio file and its `.json` file to download the episode again
