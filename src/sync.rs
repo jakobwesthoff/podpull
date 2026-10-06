@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,8 +23,8 @@ use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 use crate::state::{
-    CheckTarget, OutputState, PlannedDownload, StoredEpisode, archive_check_targets,
-    create_sync_plan, scan_output_dir,
+    CheckTarget, OutputState, PlannedDownload, StoredEpisode, UnreadableMetadata,
+    archive_check_targets, create_sync_plan, scan_output_dir,
 };
 
 /// Options for podcast synchronization
@@ -111,6 +111,14 @@ pub struct SyncResult {
     /// Number of new episodes whose audio was already stored byte for byte,
     /// so only their GUID was recorded
     pub adopted: usize,
+    /// Partial files the scan could not remove; their episodes cannot be
+    /// downloaded until they are deleted
+    pub stuck_partial_files: Vec<PathBuf>,
+    /// Episode metadata files whose content is not valid metadata
+    pub unreadable_metadata: Vec<UnreadableMetadata>,
+    /// Stored audio that could not be read to check it, as (audio filename,
+    /// error message) pairs
+    pub unverifiable_audio: Vec<(String, String)>,
 }
 
 /// What happens with stored audio that is damaged or missing
@@ -285,6 +293,9 @@ pub async fn sync_podcast<C: HttpClient>(
         not_started: totals.not_started,
         damaged: verification.damaged,
         adopted: totals.adopted,
+        stuck_partial_files: state.stuck_partial_files().to_vec(),
+        unreadable_metadata: state.unreadable_metadata().to_vec(),
+        unverifiable_audio: verification.unverifiable,
     })
 }
 
@@ -693,6 +704,8 @@ struct Verification {
     affected_present_guids: HashSet<String>,
     /// Audio filenames of stored audio found to match its recorded hash
     intact: HashSet<String>,
+    /// Stored audio that could not be read, as (audio filename, error)
+    unverifiable: Vec<(String, String)>,
 }
 
 /// Check stored audio against the hashes recorded when it was downloaded
@@ -714,6 +727,7 @@ async fn verify_stored_audio(
         repairs: Vec::new(),
         affected_present_guids: HashSet::new(),
         intact: HashSet::new(),
+        unverifiable: Vec::new(),
     };
 
     for target in targets {
@@ -751,6 +765,9 @@ async fn verify_stored_audio(
                         audio_filename: stored.audio_filename.clone(),
                         error: e.to_string(),
                     });
+                    verification
+                        .unverifiable
+                        .push((stored.audio_filename.clone(), e.to_string()));
                     continue;
                 }
             }
@@ -1005,7 +1022,7 @@ mod tests {
         };
         let reporter = Arc::new(RecordingReporter::default());
 
-        sync_podcast(
+        let result = sync_podcast(
             &client,
             "https://example.com/feed.xml",
             dir.path(),
@@ -1015,6 +1032,14 @@ mod tests {
         .await
         .unwrap();
 
+        assert_eq!(
+            result
+                .unreadable_metadata
+                .iter()
+                .map(|unreadable| &unreadable.path)
+                .collect::<Vec<_>>(),
+            vec![&truncated]
+        );
         let reported: Vec<_> = reporter
             .events()
             .into_iter()
@@ -1600,6 +1625,11 @@ mod tests {
 
         // The check could not run, which says nothing about the file.
         assert!(result.damaged.is_empty());
+        assert_eq!(result.unverifiable_audio.len(), 1);
+        assert_eq!(
+            result.unverifiable_audio[0].0,
+            format!("{}.mp3", NOMAD_STEM)
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             ProgressEvent::StoredAudioUnverifiable { audio_filename, .. }
@@ -1644,6 +1674,7 @@ mod tests {
 
         assert_eq!(result.failed, 1);
         assert!(result.failed_episodes[0].1.contains("already exists"));
+        assert_eq!(result.stuck_partial_files, vec![stuck.clone()]);
         assert!(events.iter().any(|event| matches!(
             event,
             ProgressEvent::PartialFileStuck { path } if *path == stuck
