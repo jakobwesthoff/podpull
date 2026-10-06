@@ -26,8 +26,8 @@ pub use feed::{
 };
 pub use http::{HttpClient, HttpResponse, ReqwestClient};
 pub use metadata::{
-    EpisodeMetadata, PodcastMetadata, read_episode_metadata, read_podcast_metadata,
-    write_episode_metadata, write_podcast_metadata,
+    EpisodeMetadata, PodcastMetadata, add_guid_to_episode_metadata, read_episode_metadata,
+    read_podcast_metadata, write_episode_metadata, write_podcast_metadata,
 };
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
 pub use state::{

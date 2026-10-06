@@ -21,6 +21,9 @@ pub struct EpisodeMetadata {
     pub pub_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guid: Option<String>,
+    /// Further GUIDs the feed has listed this very audio under
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_guids: Vec<String>,
     pub original_url: String,
     pub downloaded_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +49,7 @@ impl EpisodeMetadata {
             description: episode.description.clone(),
             pub_date: episode.pub_date.map(|dt| dt.to_rfc3339()),
             guid: episode.guid.clone(),
+            additional_guids: Vec::new(),
             original_url: episode.enclosure.url.to_string(),
             downloaded_at: Utc::now().to_rfc3339(),
             duration: episode.duration.clone(),
@@ -78,6 +82,23 @@ pub fn write_episode_metadata(
     path: &Path,
 ) -> Result<(), MetadataError> {
     stage_episode_metadata(episode, audio_filename, content_hash, path)?.commit()
+}
+
+/// Record that the feed also lists the episode at `path` under `guid`
+///
+/// The metadata is rewritten atomically. A GUID it already names is not
+/// added again.
+pub fn add_guid_to_episode_metadata(path: &Path, guid: &str) -> Result<(), MetadataError> {
+    let mut metadata = read_episode_metadata(path)?;
+    let already_named = metadata.guid.as_deref() == Some(guid)
+        || metadata.additional_guids.iter().any(|known| known == guid);
+    if already_named {
+        return Ok(());
+    }
+    metadata.additional_guids.push(guid.to_string());
+
+    let json = serde_json::to_string_pretty(&metadata)?;
+    stage_metadata_file(path, json.as_bytes())?.commit()
 }
 
 /// Read episode metadata from a JSON file
@@ -235,6 +256,49 @@ mod tests {
 
         assert!(!path.exists());
         assert!(!dir.path().join("episode.json.partial").exists());
+    }
+
+    #[test]
+    fn metadata_without_additional_guids_omits_and_reads_the_field() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+
+        write_episode_metadata(&make_episode(), "test.mp3", None, &path).unwrap();
+
+        // Metadata written before the field existed reads the same way.
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("additional_guids")
+        );
+        assert!(
+            read_episode_metadata(&path)
+                .unwrap()
+                .additional_guids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn add_guid_records_another_guid_once() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+        write_episode_metadata(
+            &make_episode(),
+            "test.mp3",
+            Some("sha256:abc".into()),
+            &path,
+        )
+        .unwrap();
+
+        add_guid_to_episode_metadata(&path, "reissued-guid").unwrap();
+        add_guid_to_episode_metadata(&path, "reissued-guid").unwrap();
+        add_guid_to_episode_metadata(&path, "test-guid-123").unwrap();
+
+        let metadata = read_episode_metadata(&path).unwrap();
+        assert_eq!(metadata.guid.as_deref(), Some("test-guid-123"));
+        assert_eq!(metadata.additional_guids, vec!["reissued-guid".to_string()]);
+        assert_eq!(metadata.content_hash.as_deref(), Some("sha256:abc"));
     }
 
     #[test]

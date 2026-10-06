@@ -43,7 +43,8 @@ impl OutputState {
     ) -> Self {
         let downloaded_guids = stored_episodes
             .values()
-            .filter_map(|stored| stored.guid.clone())
+            .flat_map(|stored| stored.guid.iter().chain(&stored.additional_guids))
+            .cloned()
             .collect();
         Self {
             output_dir: output_dir.to_path_buf(),
@@ -113,6 +114,8 @@ pub struct UnreadableMetadata {
 pub struct StoredEpisode {
     pub title: String,
     pub guid: Option<String>,
+    /// Further GUIDs the feed has listed this audio under
+    pub additional_guids: Vec<String>,
     /// Enclosure URL the audio was downloaded from
     pub original_url: String,
     pub pub_date: Option<DateTime<FixedOffset>>,
@@ -324,6 +327,7 @@ pub fn scan_output_dir(
                     StoredEpisode {
                         title: metadata.title,
                         guid: metadata.guid,
+                        additional_guids: metadata.additional_guids,
                         original_url: metadata.original_url,
                         pub_date: metadata
                             .pub_date
@@ -590,6 +594,7 @@ mod tests {
         StoredEpisode {
             title: title.to_string(),
             guid: Some(guid.to_string()),
+            additional_guids: Vec::new(),
             original_url: "https://example.com/ep.mp3".to_string(),
             pub_date: None,
             audio_filename: format!("{}.mp3", stem),
@@ -859,6 +864,25 @@ mod tests {
 
         assert_eq!(state.partial_files_cleaned(), 1);
         assert_eq!(state.stuck_partial_files, vec![stuck]);
+    }
+
+    #[test]
+    fn scan_counts_additional_guids_as_downloaded() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("2024-01-15-Episode.json");
+        write_episode_metadata(
+            &make_episode("Episode", Some("old-guid")),
+            "2024-01-15-Episode.mp3",
+            None,
+            &path,
+        )
+        .unwrap();
+        crate::metadata::add_guid_to_episode_metadata(&path, "new-guid").unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        assert!(state.is_downloaded("old-guid"));
+        assert!(state.is_downloaded("new-guid"));
     }
 
     #[test]
