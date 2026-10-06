@@ -184,7 +184,6 @@ pub async fn stage_download<C: HttpClient>(
         // Report progress
         reporter.report(ProgressEvent::DownloadProgress {
             download_id: context.download_id,
-            episode_title: episode.title.clone(),
             bytes_downloaded,
             total_bytes: response.content_length,
         });
@@ -205,21 +204,11 @@ pub async fn stage_download<C: HttpClient>(
         .map_err(|e| write_failed(std::io::Error::other(e)))?
         .map_err(write_failed)?;
 
-    // Finalize hash
-    let content_hash = content_hash(hasher);
-
-    // Report hashing completed
-    reporter.report(ProgressEvent::HashingCompleted {
-        download_id: context.download_id,
-        episode_title: episode.title.clone(),
-        hash: content_hash.clone(),
-    });
-
     Ok(StagedDownload {
         partial_path,
         final_path: output_path.to_path_buf(),
         bytes_downloaded,
-        content_hash,
+        content_hash: content_hash(hasher),
     })
 }
 

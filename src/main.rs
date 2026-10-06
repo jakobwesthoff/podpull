@@ -213,7 +213,6 @@ impl ProgressReporter for IndicatifReporter {
                 download_id,
                 bytes_downloaded,
                 total_bytes,
-                ..
             } => {
                 let bar = self.get_or_create_bar(download_id);
                 if let Some(total) = total_bytes {
@@ -252,14 +251,6 @@ impl ProgressReporter for IndicatifReporter {
                     error.red()
                 ));
                 self.finish_bar(download_id);
-            }
-
-            ProgressEvent::Finalizing { .. } => {
-                // Silent - the rename is fast
-            }
-
-            ProgressEvent::HashingCompleted { .. } => {
-                // Silent - hashing happens during download
             }
 
             ProgressEvent::PartialFilesCleanedUp { count } => {

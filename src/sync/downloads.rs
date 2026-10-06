@@ -230,11 +230,6 @@ pub(super) async fn download_planned<C: HttpClient>(
         }
     };
 
-    reporter.report(ProgressEvent::Finalizing {
-        download_id: context.download_id,
-        episode_title: episode.title.clone(),
-    });
-
     let bytes_downloaded = match staged_audio.finalize().await {
         Ok(bytes_downloaded) => bytes_downloaded,
         Err(e) => {
