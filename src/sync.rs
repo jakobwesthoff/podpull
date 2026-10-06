@@ -536,10 +536,13 @@ async fn download_planned<C: HttpClient>(
         episode_title: episode.title.clone(),
     });
 
-    if let Err(e) = staged_audio.finalize().await {
-        blocking(move || staged_metadata.discard()).await?;
-        return Err(e.to_string());
-    }
+    let downloaded = match staged_audio.finalize().await {
+        Ok(downloaded) => downloaded,
+        Err(e) => {
+            blocking(move || staged_metadata.discard()).await?;
+            return Err(e.to_string());
+        }
+    };
 
     if let Err(e) = blocking(move || staged_metadata.commit()).await? {
         let mut error = format!("Failed to write metadata: {}", e);
@@ -560,7 +563,7 @@ async fn download_planned<C: HttpClient>(
     reporter.report(ProgressEvent::DownloadCompleted {
         download_id: context.download_id,
         episode_title: episode.title.clone(),
-        bytes_downloaded: staged_audio.bytes_downloaded(),
+        bytes_downloaded: downloaded.bytes_downloaded,
     });
     Ok(Placed::Downloaded)
 }

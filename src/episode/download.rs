@@ -87,14 +87,21 @@ impl StagedDownload {
     }
 
     /// Move the audio from its partial file to its final name
-    pub async fn finalize(&self) -> Result<(), DownloadError> {
+    ///
+    /// If the rename fails, the partial file stays behind and the next
+    /// directory scan reports it.
+    pub async fn finalize(self) -> Result<DownloadResult, DownloadError> {
         tokio::fs::rename(&self.partial_path, &self.final_path)
             .await
             .map_err(|e| DownloadError::RenameFailed {
                 partial_path: self.partial_path.clone(),
                 final_path: self.final_path.clone(),
                 source: e,
-            })
+            })?;
+        Ok(DownloadResult {
+            bytes_downloaded: self.bytes_downloaded,
+            content_hash: self.content_hash,
+        })
     }
 
     /// Abandon the download and remove its partial file
@@ -249,18 +256,15 @@ pub async fn download_episode<C: HttpClient>(
         download_id: context.download_id,
         episode_title: episode.title.clone(),
     });
-    staged.finalize().await?;
+    let result = staged.finalize().await?;
 
     reporter.report(ProgressEvent::DownloadCompleted {
         download_id: context.download_id,
         episode_title: episode.title.clone(),
-        bytes_downloaded: staged.bytes_downloaded,
+        bytes_downloaded: result.bytes_downloaded,
     });
 
-    Ok(DownloadResult {
-        bytes_downloaded: staged.bytes_downloaded,
-        content_hash: staged.content_hash,
-    })
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -485,9 +489,11 @@ mod tests {
 
         assert!(!output_path.exists());
         assert!(dir.path().join("episode.mp3.partial").exists());
-        assert_eq!(staged.bytes_downloaded(), 18);
 
-        staged.finalize().await.unwrap();
+        let result = staged.finalize().await.unwrap();
+
+        assert_eq!(result.bytes_downloaded, 18);
+        assert_eq!(hash_file(&output_path).unwrap(), result.content_hash);
 
         assert_eq!(std::fs::read(&output_path).unwrap(), b"test audio content");
         assert!(!dir.path().join("episode.mp3.partial").exists());
