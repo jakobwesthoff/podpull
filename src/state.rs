@@ -126,9 +126,6 @@ pub struct PlannedDownload {
     /// Name of both files inside the output directory, without extension
     pub stem: String,
     pub audio_extension: String,
-    /// Key in [`OutputState::stored_episodes`] of the episode that already
-    /// occupies this episode's base filename, if any
-    pub collides_with: Option<String>,
     /// Whether the download replaces audio of an episode already stored
     /// under these names, as a repair does
     pub replaces_existing: bool,
@@ -149,12 +146,30 @@ impl PlannedDownload {
 /// Plan for synchronization, indicating what needs to be downloaded
 #[derive(Debug, Clone)]
 pub struct SyncPlan {
-    /// Episodes that need to be downloaded, newest first
+    /// Episodes to download in this run, newest first, within the limit
     pub to_download: Vec<PlannedDownload>,
     /// Episodes already present in the output directory
     pub already_present: Vec<Episode>,
-    /// Total number of episodes in the feed
+    /// Number of distinct episodes in the feed
     pub total_episodes: usize,
+    /// Number of episodes not yet downloaded, before the limit
+    pub new_episodes: usize,
+    /// Stored episodes whose base filename a download in this run would
+    /// have taken, each listed once
+    pub collisions: Vec<Collision>,
+}
+
+/// A stored episode whose base filename a planned download shares
+///
+/// Only the base name is of interest: podpull 1.1.2 and earlier wrote every
+/// episode under its base name, so only a file there can hold the bytes of
+/// two episodes downloaded at once. Names with a time or hash suffix are
+/// written with exclusive partial files.
+#[derive(Debug, Clone)]
+pub struct Collision {
+    pub stored: StoredEpisode,
+    /// The feed's episode with the stored episode's GUID, if still listed
+    pub feed_episode: Option<Episode>,
 }
 
 /// Scan the output directory to detect existing downloads
@@ -332,7 +347,11 @@ pub fn scan_output_dir(
 ///
 /// Episodes are sorted by publication date (newest first). Episodes without
 /// a publication date are placed at the end, preserving their relative order.
-pub fn create_sync_plan(mut episodes: Vec<Episode>, state: &OutputState) -> SyncPlan {
+pub fn create_sync_plan(
+    mut episodes: Vec<Episode>,
+    state: &OutputState,
+    limit: Option<usize>,
+) -> SyncPlan {
     sort_newest_first(&mut episodes);
 
     // The GUID identifies an episode, so a feed listing one twice still
@@ -361,6 +380,32 @@ pub fn create_sync_plan(mut episodes: Vec<Episode>, state: &OutputState) -> Sync
         }
     }
 
+    let new_episodes = to_download.len();
+    if let Some(limit) = limit {
+        to_download.truncate(limit);
+    }
+
+    // A stored episode under a planned download's base name is what the
+    // collision check looks at, once per stored episode.
+    let mut collisions: Vec<Collision> = Vec::new();
+    for episode in &to_download {
+        let base_key = filename_claim_key(&generate_filename_stem(episode));
+        if let Some(stored) = state.stored_episode(&base_key)
+            && !collisions
+                .iter()
+                .any(|collision| collision.stored.metadata_filename == stored.metadata_filename)
+        {
+            let feed_episode = already_present
+                .iter()
+                .find(|present| present.guid.is_some() && present.guid == stored.guid)
+                .cloned();
+            collisions.push(Collision {
+                stored: stored.clone(),
+                feed_episode,
+            });
+        }
+    }
+
     // The plan decides where every download goes, so that the paths of all
     // downloads are known before any of them starts. Names are handed out in
     // download order and each one is claimed right away, so episodes that
@@ -369,18 +414,9 @@ pub fn create_sync_plan(mut episodes: Vec<Episode>, state: &OutputState) -> Sync
     let to_download = to_download
         .into_iter()
         .map(|episode| {
-            // An earlier download under the base name is what a collision
-            // points at; it gets checked for damage before the sync starts.
-            let base_key = filename_claim_key(&generate_filename_stem(&episode));
-            let collides_with = state
-                .stored_episode(&base_key)
-                .is_some()
-                .then_some(base_key);
-
             let stem = generate_unique_filename_stem(&episode, &claimed_stems);
             claimed_stems.insert(filename_claim_key(&stem));
             PlannedDownload {
-                collides_with,
                 replaces_existing: false,
                 audio_extension: get_audio_extension(&episode),
                 stem,
@@ -393,6 +429,8 @@ pub fn create_sync_plan(mut episodes: Vec<Episode>, state: &OutputState) -> Sync
         to_download,
         already_present,
         total_episodes,
+        new_episodes,
+        collisions,
     }
 }
 
@@ -723,7 +761,7 @@ mod tests {
             make_episode("Ep 2", Some("guid-2")),
         ];
 
-        let plan = create_sync_plan(episodes, &state);
+        let plan = create_sync_plan(episodes, &state, None);
 
         assert_eq!(plan.to_download.len(), 2);
         assert_eq!(plan.already_present.len(), 0);
@@ -739,7 +777,7 @@ mod tests {
             make_episode("Ep 2", Some("guid-2")),
         ];
 
-        let plan = create_sync_plan(episodes, &state);
+        let plan = create_sync_plan(episodes, &state, None);
 
         assert_eq!(plan.to_download.len(), 1);
         assert_eq!(plan.to_download[0].episode.title, "Ep 2");
@@ -756,7 +794,7 @@ mod tests {
             make_episode("Ep 2", None), // No GUID, should be downloaded
         ];
 
-        let plan = create_sync_plan(episodes, &state);
+        let plan = create_sync_plan(episodes, &state, None);
 
         assert_eq!(plan.to_download.len(), 1);
         assert_eq!(plan.to_download[0].episode.title, "Ep 2");
@@ -773,7 +811,7 @@ mod tests {
             ..make_episode_with_date("Audio Book", Some("guid-1"), Some(make_date(2024, 1, 16)))
         };
 
-        let plan = create_sync_plan(vec![episode], &state_with_guids(&[]));
+        let plan = create_sync_plan(vec![episode], &state_with_guids(&[]), None);
 
         assert_eq!(
             plan.to_download[0].audio_filename(),
@@ -800,7 +838,7 @@ mod tests {
             make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
         );
 
-        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]));
+        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]), None);
 
         let names: Vec<_> = plan
             .to_download
@@ -835,7 +873,7 @@ mod tests {
             make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
         );
 
-        let plan = create_sync_plan(vec![episode], &state);
+        let plan = create_sync_plan(vec![episode], &state, None);
 
         assert_eq!(
             plan.to_download[0].audio_filename(),
@@ -843,63 +881,100 @@ mod tests {
         );
     }
 
+    fn sega_nomad(guid: &str, time: &str) -> Episode {
+        make_episode_with_date("Sega Nomad", Some(guid), make_time(time))
+    }
+
     #[test]
-    fn sync_plan_points_disk_collisions_at_the_stored_episode() {
+    fn sync_plan_lists_stored_episodes_that_downloads_collide_with() {
         let state = state_with_stored(vec![stored(
             "2024-12-19-Sega Nomad",
             "Sega Nomad",
             "guid-stored",
         )]);
-        let key = filename_claim_key("2024-12-19-Sega Nomad");
-        let newer = make_episode_with_date(
-            "Sega Nomad",
-            Some("guid-newer"),
-            make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
-        );
-        let older = make_episode_with_date(
-            "Sega Nomad",
-            Some("guid-older"),
-            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
-        );
+        let stored_episode = sega_nomad("guid-stored", "Thu, 19 Dec 2024 11:00:00 +0000");
+        let newer = sega_nomad("guid-newer", "Thu, 19 Dec 2024 10:45:35 +0000");
+        let older = sega_nomad("guid-older", "Thu, 19 Dec 2024 10:25:22 +0000");
         let unrelated = make_episode_with_date(
             "Other",
             Some("guid-other"),
             make_time("Thu, 19 Dec 2024 08:00:00 +0000"),
         );
 
-        let plan = create_sync_plan(vec![older, newer, unrelated], &state);
+        let plan = create_sync_plan(vec![older, newer, unrelated, stored_episode], &state, None);
 
-        let collisions: Vec<_> = plan
-            .to_download
-            .iter()
-            .map(|planned| planned.collides_with.as_deref())
-            .collect();
+        // Two downloads collide with the same stored episode; it is listed
+        // once, together with the feed episode it belongs to.
+        assert_eq!(plan.collisions.len(), 1);
+        let collision = &plan.collisions[0];
         assert_eq!(
-            collisions,
-            vec![Some(key.as_str()), Some(key.as_str()), None]
+            collision.stored.metadata_filename,
+            "2024-12-19-Sega Nomad.json"
+        );
+        assert_eq!(
+            collision
+                .feed_episode
+                .as_ref()
+                .and_then(|e| e.guid.as_deref()),
+            Some("guid-stored")
         );
     }
 
     #[test]
-    fn sync_plan_does_not_point_collisions_within_the_run_at_stored_episodes() {
-        let older = make_episode_with_date(
+    fn sync_plan_leaves_feed_episode_empty_for_stored_episodes_gone_from_feed() {
+        let state = state_with_stored(vec![stored(
+            "2024-12-19-Sega Nomad",
             "Sega Nomad",
-            Some("guid-older"),
-            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
-        );
-        let newer = make_episode_with_date(
+            "guid-gone",
+        )]);
+        let newer = sega_nomad("guid-newer", "Thu, 19 Dec 2024 10:45:35 +0000");
+
+        let plan = create_sync_plan(vec![newer], &state, None);
+
+        assert!(plan.collisions[0].feed_episode.is_none());
+    }
+
+    #[test]
+    fn sync_plan_lists_no_collisions_within_the_run() {
+        let older = sega_nomad("guid-older", "Thu, 19 Dec 2024 10:25:22 +0000");
+        let newer = sega_nomad("guid-newer", "Thu, 19 Dec 2024 10:45:35 +0000");
+
+        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]), None);
+
+        assert!(plan.collisions.is_empty());
+    }
+
+    #[test]
+    fn sync_plan_applies_the_limit_to_new_episodes() {
+        let episodes = vec![
+            make_episode_with_date("Old", Some("guid-1"), Some(make_date(2024, 1, 1))),
+            make_episode_with_date("New", Some("guid-2"), Some(make_date(2024, 1, 2))),
+        ];
+
+        let plan = create_sync_plan(episodes, &state_with_guids(&[]), Some(1));
+
+        assert_eq!(plan.new_episodes, 2);
+        assert_eq!(plan.to_download.len(), 1);
+        assert_eq!(plan.to_download[0].episode.title, "New");
+    }
+
+    #[test]
+    fn sync_plan_lists_only_collisions_of_downloads_within_the_limit() {
+        let state = state_with_stored(vec![stored(
+            "2024-12-19-Sega Nomad",
             "Sega Nomad",
-            Some("guid-newer"),
-            make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
+            "guid-stored",
+        )]);
+        let unrelated = make_episode_with_date(
+            "Other",
+            Some("guid-other"),
+            make_time("Fri, 20 Dec 2024 08:00:00 +0000"),
         );
+        let older = sega_nomad("guid-older", "Thu, 19 Dec 2024 10:25:22 +0000");
 
-        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]));
+        let plan = create_sync_plan(vec![older, unrelated], &state, Some(1));
 
-        assert!(
-            plan.to_download
-                .iter()
-                .all(|planned| planned.collides_with.is_none())
-        );
+        assert!(plan.collisions.is_empty());
     }
 
     #[test]
@@ -915,7 +990,7 @@ mod tests {
             make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
         );
 
-        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]));
+        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]), None);
 
         // The GUID is podpull's identity of an episode, so a feed listing it
         // twice still holds one episode; the newer listing wins.
@@ -934,7 +1009,7 @@ mod tests {
             make_episode("Ep 1", Some("guid-1")),
         ];
 
-        let plan = create_sync_plan(episodes, &state_with_guids(&["guid-1"]));
+        let plan = create_sync_plan(episodes, &state_with_guids(&["guid-1"]), None);
 
         assert_eq!(plan.already_present.len(), 1);
         assert_eq!(plan.total_episodes, 1);
@@ -944,7 +1019,7 @@ mod tests {
     fn sync_plan_keeps_episodes_without_guid_apart() {
         let episodes = vec![make_episode("Ep 1", None), make_episode("Ep 2", None)];
 
-        let plan = create_sync_plan(episodes, &state_with_guids(&[]));
+        let plan = create_sync_plan(episodes, &state_with_guids(&[]), None);
 
         assert_eq!(plan.to_download.len(), 2);
     }
@@ -993,7 +1068,7 @@ mod tests {
             ),
         ];
 
-        let plan = create_sync_plan(episodes, &state);
+        let plan = create_sync_plan(episodes, &state, None);
 
         // Should be sorted newest first
         assert_eq!(plan.to_download.len(), 3);
@@ -1012,7 +1087,7 @@ mod tests {
             make_episode_with_date("No Date 2", Some("guid-3"), None),
         ];
 
-        let plan = create_sync_plan(episodes, &state);
+        let plan = create_sync_plan(episodes, &state, None);
 
         // Episode with date should be first, undated ones at the end
         assert_eq!(plan.to_download.len(), 3);

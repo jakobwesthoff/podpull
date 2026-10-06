@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,12 +11,12 @@ use url::Url;
 use crate::episode::{DownloadContext, hash_file, stage_download};
 use crate::error::{FeedError, SyncError};
 use crate::feed::{
-    Episode, Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
+    Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
 };
 use crate::http::HttpClient;
 use crate::metadata::{stage_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
-use crate::state::{OutputState, PlannedDownload, create_sync_plan, scan_output_dir};
+use crate::state::{Collision, PlannedDownload, create_sync_plan, scan_output_dir};
 
 /// Options for podcast synchronization
 #[derive(Debug, Clone)]
@@ -100,41 +99,31 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     }
 
     // Create sync plan (episodes are sorted by pub_date, newest first)
-    let plan = create_sync_plan(podcast.episodes.clone(), &state);
-
-    // Track new episodes count before applying limit
-    let new_episodes_count = plan.to_download.len();
-
-    // Apply limit if specified
-    let mut to_download: Vec<_> = if let Some(limit) = options.limit {
-        plan.to_download.into_iter().take(limit).collect()
-    } else {
-        plan.to_download
-    };
-    let limited = new_episodes_count.saturating_sub(to_download.len());
+    let plan = create_sync_plan(podcast.episodes.clone(), &state, options.limit);
+    let limited = plan.new_episodes - plan.to_download.len();
 
     let verification = verify_collided_audio(
-        &to_download,
-        &state,
-        &plan.already_present,
+        &plan.collisions,
+        state.output_dir(),
         options.repair_mismatched_audio,
         &reporter,
     )
     .await;
 
+    reporter.report(ProgressEvent::SyncPlanReady {
+        podcast_title: podcast.title.clone(),
+        total_episodes: plan.total_episodes,
+        new_episodes: plan.new_episodes,
+        to_download: plan.to_download.len(),
+        repairs: verification.repairs.len(),
+    });
+
     // A repair replaces an episode that is already present rather than
     // adding a new one, so the limit does not apply to it and it no longer
     // counts as existing.
     let existing = plan.already_present.len() - verification.repairs.len();
-    to_download.splice(0..0, verification.repairs);
-    let total_to_download = to_download.len();
-
-    reporter.report(ProgressEvent::SyncPlanReady {
-        podcast_title: podcast.title.clone(),
-        total_episodes: plan.total_episodes,
-        new_episodes: new_episodes_count,
-        to_download: total_to_download,
-    });
+    let mut to_download = verification.repairs;
+    to_download.extend(plan.to_download);
 
     // Write podcast metadata
     write_podcast_metadata(&podcast, output_dir)?;
@@ -404,33 +393,23 @@ struct Verification {
 /// matches the hash its metadata recorded. Tags edited by the user cause a
 /// mismatch as well, so a mismatch is only repaired when `repair` is set:
 /// the episode is then downloaded again under its existing names, which
-/// requires it to still be in the feed (`present`).
+/// requires it to still be in the feed.
 async fn verify_collided_audio(
-    to_download: &[PlannedDownload],
-    state: &OutputState,
-    present: &[Episode],
+    collisions: &[Collision],
+    output_dir: &Path,
     repair: bool,
     reporter: &SharedProgressReporter,
 ) -> Verification {
     let mut failures = Vec::new();
     let mut repairs = Vec::new();
-    let mut verified = HashSet::new();
 
-    for key in to_download
-        .iter()
-        .filter_map(|planned| planned.collides_with.as_ref())
-    {
-        if !verified.insert(key) {
-            continue;
-        }
-        let stored = state
-            .stored_episode(key)
-            .expect("the plan only points collisions at stored episodes");
+    for collision in collisions {
+        let stored = &collision.stored;
         let Some(recorded_hash) = &stored.content_hash else {
             continue;
         };
 
-        let audio_path = state.output_dir().join(&stored.audio_filename);
+        let audio_path = output_dir.join(&stored.audio_filename);
         let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
             .await
             .expect("hashing a file does not panic");
@@ -440,9 +419,7 @@ async fn verify_collided_audio(
             continue;
         }
 
-        let owner = present
-            .iter()
-            .find(|episode| repair && episode.guid.is_some() && episode.guid == stored.guid);
+        let owner = collision.feed_episode.as_ref().filter(|_| repair);
         reporter.report(ProgressEvent::StoredAudioMismatch {
             episode_title: stored.title.clone(),
             audio_filename: stored.audio_filename.clone(),
@@ -460,7 +437,6 @@ async fn verify_collided_audio(
                     .extension()
                     .map(|ext| ext.to_string_lossy().into_owned())
                     .unwrap_or_default(),
-                collides_with: None,
                 replaces_existing: true,
             }),
             None => failures.push((
@@ -1267,7 +1243,7 @@ mod tests {
 
         // The limit admits only the newest new episode; the repair of the
         // episode it collides with comes on top.
-        let (result, _) = sync_repairing(
+        let (result, events) = sync_repairing(
             dir.path(),
             &[NOMAD_REUPLOAD, NOMAD_ORIGINAL, older],
             Some(1),
@@ -1277,6 +1253,17 @@ mod tests {
         assert_eq!(result.downloaded, 2);
         assert_eq!(result.failed, 0);
         assert!(!recorded_episodes(dir.path()).contains_key("older"));
+        // The repair is reported apart from the new episodes, so the limit
+        // stays visible.
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProgressEvent::SyncPlanReady {
+                new_episodes: 2,
+                to_download: 1,
+                repairs: 1,
+                ..
+            }
+        )));
     }
 
     #[tokio::test]
@@ -1413,7 +1400,6 @@ mod tests {
             episode: feed.episodes[0].clone(),
             stem: NOMAD_STEM.to_string(),
             audio_extension: "mp3".to_string(),
-            collides_with: None,
             replaces_existing,
         }
     }

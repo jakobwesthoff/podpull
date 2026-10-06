@@ -157,30 +157,23 @@ impl ProgressReporter for IndicatifReporter {
                 total_episodes,
                 new_episodes,
                 to_download,
+                repairs,
             } => {
                 // Reset to spinner style after scanning
                 let main_style = ProgressStyle::default_bar()
                     .template("{spinner:.green} {wide_msg}")
                     .unwrap();
                 self.main_bar.set_style(main_style);
-                if new_episodes == to_download {
-                    // No limit applied or limit >= new
-                    self.main_bar.set_message(format!(
-                        "{HEADPHONES}{} • {} total, {} new",
-                        podcast_title.bold().green(),
-                        total_episodes.to_string().cyan(),
-                        new_episodes.to_string().yellow()
-                    ));
-                } else {
-                    // Limit applied
-                    self.main_bar.set_message(format!(
-                        "{HEADPHONES}{} • {} total, {} new, downloading {}",
-                        podcast_title.bold().green(),
-                        total_episodes.to_string().cyan(),
-                        new_episodes.to_string().yellow(),
-                        to_download.to_string().green()
-                    ));
-                }
+                self.main_bar.set_message(format!(
+                    "{HEADPHONES}{}",
+                    plan_message(
+                        &podcast_title,
+                        total_episodes,
+                        new_episodes,
+                        to_download,
+                        repairs
+                    )
+                ));
             }
 
             ProgressEvent::DownloadStarting {
@@ -337,6 +330,32 @@ impl ProgressReporter for IndicatifReporter {
     }
 }
 
+fn plan_message(
+    podcast_title: &str,
+    total_episodes: usize,
+    new_episodes: usize,
+    to_download: usize,
+    repairs: usize,
+) -> String {
+    let mut message = format!(
+        "{} • {} total, {} new",
+        podcast_title.bold().green(),
+        total_episodes.to_string().cyan(),
+        new_episodes.to_string().yellow()
+    );
+    // Fewer downloads than new episodes means the limit applies.
+    if to_download != new_episodes {
+        message.push_str(&format!(
+            ", downloading {}",
+            to_download.to_string().green()
+        ));
+    }
+    if repairs > 0 {
+        message.push_str(&format!(", repairing {}", repairs.to_string().green()));
+    }
+    message
+}
+
 fn stuck_partial_file_message(path: &Path) -> String {
     format!(
         "Could not remove the leftover partial file {}; its episode cannot be downloaded until it is deleted",
@@ -459,6 +478,34 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_message_shows_only_new_episodes_without_limit_or_repairs() {
+        colored::control::set_override(false);
+        assert_eq!(plan_message("Show", 10, 2, 2, 0), "Show • 10 total, 2 new");
+    }
+
+    #[test]
+    fn plan_message_shows_the_limit() {
+        colored::control::set_override(false);
+        assert_eq!(
+            plan_message("Show", 10, 2, 1, 0),
+            "Show • 10 total, 2 new, downloading 1"
+        );
+    }
+
+    #[test]
+    fn plan_message_shows_repairs_apart_from_the_limit() {
+        colored::control::set_override(false);
+        assert_eq!(
+            plan_message("Show", 10, 2, 2, 1),
+            "Show • 10 total, 2 new, repairing 1"
+        );
+        assert_eq!(
+            plan_message("Show", 10, 2, 1, 1),
+            "Show • 10 total, 2 new, downloading 1, repairing 1"
+        );
+    }
 
     #[test]
     fn stuck_partial_file_message_names_the_file() {

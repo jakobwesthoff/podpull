@@ -31,7 +31,7 @@ pub use metadata::{
 };
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
 pub use state::{
-    OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata, create_sync_plan,
-    scan_output_dir,
+    Collision, OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata,
+    create_sync_plan, scan_output_dir,
 };
 pub use sync::{SyncOptions, SyncResult, sync_podcast};

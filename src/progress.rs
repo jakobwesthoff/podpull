@@ -31,8 +31,10 @@ pub enum ProgressEvent {
         total_episodes: usize,
         /// All episodes not yet downloaded
         new_episodes: usize,
-        /// Episodes to download after limit applied (may equal new_episodes)
+        /// New episodes to download after limit applied (may equal new_episodes)
         to_download: usize,
+        /// Episodes downloaded again to replace damaged audio
+        repairs: usize,
     },
 
     /// A download is starting
@@ -176,6 +178,7 @@ mod tests {
             total_episodes: 10,
             new_episodes: 5,
             to_download: 3,
+            repairs: 0,
         });
 
         reporter.report(ProgressEvent::DownloadStarting {
