@@ -34,14 +34,31 @@ pub struct DownloadResult {
     pub content_hash: String,
 }
 
+/// Read size for hashing stored audio; large reads keep the number of
+/// round trips low on a network share
+const HASH_READ_SIZE: usize = 1024 * 1024;
+
+/// Format a finished hash the way episode metadata records it
+fn content_hash(hasher: Sha256) -> String {
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 /// Hash a file in the format [`DownloadResult::content_hash`] uses
 ///
 /// Reads the whole file, so on a network share it costs a full transfer.
-pub fn hash_file(path: &Path) -> std::io::Result<String> {
+/// Blocks the calling thread while it reads.
+pub(crate) fn hash_file(path: &Path) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)?;
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    let mut buffer = vec![0; HASH_READ_SIZE];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(content_hash(hasher))
 }
 
 /// An episode whose audio is complete in its partial file but not yet
@@ -191,7 +208,7 @@ pub async fn stage_download<C: HttpClient>(
         })?;
 
     // Finalize hash
-    let content_hash = format!("sha256:{:x}", hasher.finalize());
+    let content_hash = content_hash(hasher);
 
     // Report hashing completed
     reporter.report(ProgressEvent::HashingCompleted {

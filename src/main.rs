@@ -13,8 +13,8 @@ use console::Emoji;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use podpull::{
-    NoopReporter, ProgressEvent, ProgressReporter, ReqwestClient, SharedProgressReporter,
-    SyncOptions, sync_podcast,
+    DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter, ReqwestClient,
+    SharedProgressReporter, SyncOptions, sync_podcast,
 };
 
 // Emoji with fallback for terminals without Unicode support
@@ -277,15 +277,29 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            ProgressEvent::StoredAudioMismatch {
-                episode_title,
+            ProgressEvent::VerifyingStoredAudio { audio_filename } => {
+                self.main_bar
+                    .set_message(format!("{SEARCH}Checking {}...", audio_filename.cyan()));
+            }
+
+            ProgressEvent::StoredAudioUnverifiable {
                 audio_filename,
-                repairing,
+                error,
             } => {
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    stored_audio_mismatch_message(&episode_title, &audio_filename, repairing)
-                        .yellow()
+                    unverifiable_audio_message(&audio_filename, &error).yellow()
+                ));
+            }
+
+            ProgressEvent::StoredAudioMismatch {
+                episode_title,
+                audio_filename,
+                remedy,
+            } => {
+                let _ = self.multi.println(format!(
+                    "{WARNING}{}",
+                    damage_message(&episode_title, &audio_filename, remedy).yellow()
                 ));
             }
 
@@ -295,6 +309,7 @@ impl ProgressReporter for IndicatifReporter {
                 limited_count,
                 failed_count,
                 not_started_count,
+                damaged_count,
             } => {
                 self.main_bar.finish_and_clear();
 
@@ -319,6 +334,13 @@ impl ProgressReporter for IndicatifReporter {
                 } else {
                     format!("{} failed", failed_count.to_string().green())
                 });
+
+                if damaged_count > 0 {
+                    parts.push(format!(
+                        "{} damaged",
+                        damaged_count.to_string().red().bold()
+                    ));
+                }
 
                 println!(
                     "\n{PARTY}{} {}",
@@ -371,20 +393,31 @@ fn unreadable_metadata_message(path: &Path, error: &str) -> String {
     )
 }
 
-fn stored_audio_mismatch_message(
-    episode_title: &str,
-    audio_filename: &str,
-    repairing: bool,
-) -> String {
+fn unverifiable_audio_message(audio_filename: &str, error: &str) -> String {
     format!(
-        "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded{}",
-        episode_title,
-        audio_filename,
-        if repairing {
-            "; downloading it again"
-        } else {
-            ""
+        "Could not read {} to check it against its recorded hash ({})",
+        audio_filename, error
+    )
+}
+
+fn damage_message(episode_title: &str, audio_filename: &str, remedy: DamageRemedy) -> String {
+    let remedy = match remedy {
+        DamageRemedy::Repairing => "downloading it again",
+        DamageRemedy::RepairAvailable => {
+            "run with --repair to download it again, or delete it and its .json file"
         }
+        DamageRemedy::NoFeedEpisode => {
+            "it cannot be matched to an episode in the feed, so it cannot be downloaded \
+             again and was left untouched"
+        }
+        DamageRemedy::EnclosureFormatChanged => {
+            "the feed now offers another audio format, so delete it and its .json file \
+             to download it again"
+        }
+    };
+    format!(
+        "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded; {}",
+        episode_title, audio_filename, remedy
     )
 }
 
@@ -461,6 +494,21 @@ async fn main() -> Result<()> {
         }
     }
 
+    if !args.quiet && !result.damaged.is_empty() {
+        println!("\n{}", "Damaged episodes:".red().bold());
+        for damaged in &result.damaged {
+            println!(
+                "  {}{}",
+                CROSS,
+                damage_message(
+                    &damaged.episode_title,
+                    &damaged.audio_filename,
+                    damaged.remedy
+                )
+            );
+        }
+    }
+
     if !args.quiet {
         println!(
             "\n{FOLDER}Output: {}\n",
@@ -529,7 +577,9 @@ mod tests {
     }
 
     #[test]
-    fn reporter_prints_collision_warnings() {
+    fn reporter_accepts_collision_events() {
+        // indicatif draws to the terminal, so this only checks that every
+        // match arm runs; the message texts are asserted by the helper tests.
         let reporter = IndicatifReporter::new();
 
         reporter.report(ProgressEvent::PartialFileStuck {
@@ -539,28 +589,65 @@ mod tests {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
             error: "EOF while parsing".to_string(),
         });
+        reporter.report(ProgressEvent::VerifyingStoredAudio {
+            audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+        });
+        reporter.report(ProgressEvent::StoredAudioUnverifiable {
+            audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+            error: "Permission denied".to_string(),
+        });
         reporter.report(ProgressEvent::StoredAudioMismatch {
             episode_title: "Sega Nomad".to_string(),
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
-            repairing: true,
+            remedy: DamageRemedy::Repairing,
         });
     }
 
+    fn damage(remedy: DamageRemedy) -> String {
+        damage_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3", remedy)
+    }
+
     #[test]
-    fn stored_audio_mismatch_message_names_episode_and_file() {
+    fn damage_message_announces_repair() {
         assert_eq!(
-            stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3", false),
+            damage(DamageRemedy::Repairing),
             "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
-             the hash recorded when it was downloaded"
+             the hash recorded when it was downloaded; downloading it again"
         );
     }
 
     #[test]
-    fn stored_audio_mismatch_message_announces_repair() {
+    fn damage_message_points_to_repair_while_in_feed() {
         assert_eq!(
-            stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3", true),
+            damage(DamageRemedy::RepairAvailable),
             "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
-             the hash recorded when it was downloaded; downloading it again"
+             the hash recorded when it was downloaded; run with --repair to download \
+             it again, or delete it and its .json file"
+        );
+    }
+
+    #[test]
+    fn damage_message_says_why_no_repair_is_possible() {
+        assert_eq!(
+            damage(DamageRemedy::NoFeedEpisode),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
+             the hash recorded when it was downloaded; it cannot be matched to an \
+             episode in the feed, so it cannot be downloaded again and was left untouched"
+        );
+        assert_eq!(
+            damage(DamageRemedy::EnclosureFormatChanged),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
+             the hash recorded when it was downloaded; the feed now offers another \
+             audio format, so delete it and its .json file to download it again"
+        );
+    }
+
+    #[test]
+    fn unverifiable_audio_message_names_file_and_error() {
+        assert_eq!(
+            unverifiable_audio_message("2024-12-19-Sega Nomad.mp3", "Permission denied"),
+            "Could not read 2024-12-19-Sega Nomad.mp3 to check it against its \
+             recorded hash (Permission denied)"
         );
     }
 

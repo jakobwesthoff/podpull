@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::sync::DamageRemedy;
+
 /// Events emitted during podcast synchronization for progress reporting
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
@@ -100,13 +102,22 @@ pub enum ProgressEvent {
     /// metadata
     MetadataUnreadable { path: PathBuf, error: String },
 
-    /// An existing audio file that a new episode collided with no longer
-    /// matches the hash recorded when it was downloaded
+    /// An existing audio file is about to be hashed to check it against the
+    /// hash recorded when it was downloaded
+    VerifyingStoredAudio { audio_filename: String },
+
+    /// An existing audio file could not be read to check it
+    StoredAudioUnverifiable {
+        audio_filename: String,
+        error: String,
+    },
+
+    /// An existing audio file no longer matches the hash recorded when it
+    /// was downloaded
     StoredAudioMismatch {
         episode_title: String,
         audio_filename: String,
-        /// Whether the episode is downloaded again to replace the file
-        repairing: bool,
+        remedy: DamageRemedy,
     },
 
     /// Sync operation completed
@@ -119,6 +130,8 @@ pub enum ProgressEvent {
         failed_count: usize,
         /// Episodes not started because a failure stopped the run
         not_started_count: usize,
+        /// Stored audio found damaged and left as it is
+        damaged_count: usize,
     },
 }
 
@@ -233,7 +246,16 @@ mod tests {
         reporter.report(ProgressEvent::StoredAudioMismatch {
             episode_title: "Episode 1".to_string(),
             audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
-            repairing: false,
+            remedy: DamageRemedy::RepairAvailable,
+        });
+
+        reporter.report(ProgressEvent::VerifyingStoredAudio {
+            audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
+        });
+
+        reporter.report(ProgressEvent::StoredAudioUnverifiable {
+            audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
+            error: "Permission denied".to_string(),
         });
 
         reporter.report(ProgressEvent::SyncCompleted {
@@ -242,6 +264,7 @@ mod tests {
             limited_count: 2,
             failed_count: 1,
             not_started_count: 0,
+            damaged_count: 0,
         });
     }
 }

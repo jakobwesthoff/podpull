@@ -5,8 +5,9 @@
 mod download;
 mod filename;
 
+pub(crate) use download::hash_file;
 pub use download::{
-    DownloadContext, DownloadResult, StagedDownload, download_episode, hash_file, stage_download,
+    DownloadContext, DownloadResult, StagedDownload, download_episode, stage_download,
 };
 #[allow(deprecated)]
 pub use filename::generate_filename;

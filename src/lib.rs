@@ -34,4 +34,4 @@ pub use state::{
     Collision, OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata,
     create_sync_plan, scan_output_dir,
 };
-pub use sync::{SyncOptions, SyncResult, sync_podcast};
+pub use sync::{DamageRemedy, DamagedAudio, SyncOptions, SyncResult, sync_podcast};
