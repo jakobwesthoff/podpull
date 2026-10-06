@@ -5,6 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, FixedOffset};
+use url::Url;
+
 use crate::episode::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };
@@ -108,6 +111,9 @@ pub struct UnreadableMetadata {
 pub struct StoredEpisode {
     pub title: String,
     pub guid: Option<String>,
+    /// Enclosure URL the audio was downloaded from
+    pub original_url: String,
+    pub pub_date: Option<DateTime<FixedOffset>>,
     /// Name of the audio file, spelled the way the directory lists it
     pub audio_filename: String,
     /// Name of the metadata file, spelled the way the directory lists it
@@ -299,6 +305,10 @@ pub fn scan_output_dir(
                     StoredEpisode {
                         title: metadata.title,
                         guid: metadata.guid,
+                        original_url: metadata.original_url,
+                        pub_date: metadata
+                            .pub_date
+                            .and_then(|date| DateTime::parse_from_rfc3339(&date).ok()),
                         audio_filename,
                         metadata_filename: format!("{}.json", stem),
                         content_hash: metadata.content_hash,
@@ -372,7 +382,8 @@ pub fn create_sync_plan(
         let is_downloaded = episode
             .guid
             .as_ref()
-            .is_some_and(|guid| state.is_downloaded(guid));
+            .is_some_and(|guid| state.is_downloaded(guid))
+            || is_guidless_reissue(&episode, state);
 
         if is_downloaded {
             already_present.push(episode);
@@ -426,6 +437,50 @@ pub fn create_sync_plan(
         new_episodes,
         collisions,
     }
+}
+
+/// Whether `episode` lacks a GUID and is already stored under an enclosure
+/// URL that differs only before its file name
+///
+/// Without a GUID the enclosure URL identifies an episode, and private feeds
+/// put an access token into that URL. Every new token would otherwise make
+/// the whole archive count as new and store it a second time. The match
+/// requires title, exact publication time and the URL's file name to agree,
+/// because a wrong match skips a distinct episode.
+fn is_guidless_reissue(episode: &Episode, state: &OutputState) -> bool {
+    let url = &episode.enclosure.url;
+    if !identity_is_url(episode.guid.as_deref(), url) {
+        return false;
+    }
+    let (Some(pub_date), Some(file_name)) = (episode.pub_date, url_file_name(url)) else {
+        return false;
+    };
+
+    state.stored_episodes().any(|stored| {
+        let Ok(stored_url) = Url::parse(&stored.original_url) else {
+            return false;
+        };
+        stored.title == episode.title
+            && stored.pub_date == Some(pub_date)
+            && identity_is_url(stored.guid.as_deref(), &stored_url)
+            && url_file_name(&stored_url) == Some(file_name)
+    })
+}
+
+/// Whether a GUID is the enclosure URL, as parsing makes it for an item
+/// without a GUID
+///
+/// Comparing parsed URLs tolerates the differences between the raw string
+/// in the feed and the URL as parsed, such as escaping.
+fn identity_is_url(guid: Option<&str>, url: &Url) -> bool {
+    guid.and_then(|guid| Url::parse(guid).ok())
+        .is_some_and(|guid_url| guid_url == *url)
+}
+
+fn url_file_name(url: &Url) -> Option<&str> {
+    url.path_segments()?
+        .next_back()
+        .filter(|name| !name.is_empty())
 }
 
 /// Every stored episode, as targets for checking the whole archive
@@ -516,10 +571,44 @@ mod tests {
         StoredEpisode {
             title: title.to_string(),
             guid: Some(guid.to_string()),
+            original_url: "https://example.com/ep.mp3".to_string(),
+            pub_date: None,
             audio_filename: format!("{}.mp3", stem),
             metadata_filename: format!("{}.json", stem),
             content_hash: None,
         }
+    }
+
+    const TOKEN_A_URL: &str = "https://example.com/media/token-a/episode-uuid.mp3";
+    const TOKEN_B_URL: &str = "https://example.com/media/token-b/episode-uuid.mp3";
+    const EPISODE_TIME: &str = "Thu, 19 Dec 2024 10:25:22 +0000";
+
+    /// An episode of a feed without GUIDs, identified by its enclosure URL,
+    /// as parsing does for a missing GUID
+    fn guidless(url: &str, title: &str, time: &str) -> Episode {
+        Episode {
+            guid: Some(url.to_string()),
+            enclosure: Enclosure {
+                url: Url::parse(url).unwrap(),
+                length: None,
+                mime_type: None,
+            },
+            ..make_episode_with_date(title, None, make_time(time))
+        }
+    }
+
+    /// The stored counterpart of [`guidless`]
+    fn stored_guidless(url: &str, title: &str, time: &str) -> StoredEpisode {
+        StoredEpisode {
+            guid: Some(url.to_string()),
+            original_url: url.to_string(),
+            pub_date: make_time(time),
+            ..stored("2024-12-19-Sega Nomad", title, url)
+        }
+    }
+
+    fn plan_for_rotated_token(stored: StoredEpisode, episode: Episode) -> SyncPlan {
+        create_sync_plan(vec![episode], &state_with_stored(vec![stored]), None)
     }
 
     /// State of an output directory holding exactly these stored episodes,
@@ -712,6 +801,7 @@ mod tests {
         assert_eq!(stored.title, "Neuzug\u{00e4}nge #4");
         assert_eq!(stored.audio_filename, format!("{}.mp3", listed_stem));
         assert_eq!(stored.metadata_filename, format!("{}.json", listed_stem));
+        assert_eq!(stored.original_url, "https://example.com/ep.mp3");
         assert_eq!(stored.guid.as_deref(), Some("guid-1"));
         assert_eq!(stored.content_hash.as_deref(), Some("sha256:abc"));
     }
@@ -1069,6 +1159,91 @@ mod tests {
             summary,
             vec![("2024-01-01-A.mp3", None), ("2024-01-02-B.mp3", Some("B"))]
         );
+    }
+
+    #[test]
+    fn sync_plan_skips_guidless_episode_whose_url_token_changed() {
+        let plan = plan_for_rotated_token(
+            stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME),
+            guidless(TOKEN_B_URL, "Sega Nomad", EPISODE_TIME),
+        );
+
+        assert!(plan.to_download.is_empty());
+        assert_eq!(plan.already_present.len(), 1);
+    }
+
+    #[test]
+    fn sync_plan_downloads_guidless_episode_with_another_file_name() {
+        let plan = plan_for_rotated_token(
+            stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME),
+            guidless(
+                "https://example.com/media/token-b/other-uuid.mp3",
+                "Sega Nomad",
+                EPISODE_TIME,
+            ),
+        );
+
+        assert_eq!(plan.to_download.len(), 1);
+    }
+
+    #[test]
+    fn sync_plan_downloads_guidless_episode_published_at_another_time() {
+        let plan = plan_for_rotated_token(
+            stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME),
+            guidless(TOKEN_B_URL, "Sega Nomad", "Thu, 19 Dec 2024 10:25:23 +0000"),
+        );
+
+        assert_eq!(plan.to_download.len(), 1);
+    }
+
+    #[test]
+    fn sync_plan_downloads_guidless_episode_with_another_title() {
+        let plan = plan_for_rotated_token(
+            stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME),
+            guidless(TOKEN_B_URL, "Sega Nomad Part 2", EPISODE_TIME),
+        );
+
+        assert_eq!(plan.to_download.len(), 1);
+    }
+
+    #[test]
+    fn sync_plan_downloads_episode_with_real_guid_despite_matching_guidless_one() {
+        let mut episode = guidless(TOKEN_B_URL, "Sega Nomad", EPISODE_TIME);
+        episode.guid = Some("real-guid".to_string());
+
+        let plan = plan_for_rotated_token(
+            stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME),
+            episode,
+        );
+
+        assert_eq!(plan.to_download.len(), 1);
+    }
+
+    #[test]
+    fn sync_plan_does_not_match_stored_episode_with_real_guid() {
+        let stored = StoredEpisode {
+            guid: Some("real-guid".to_string()),
+            ..stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME)
+        };
+
+        let plan =
+            plan_for_rotated_token(stored, guidless(TOKEN_B_URL, "Sega Nomad", EPISODE_TIME));
+
+        assert_eq!(plan.to_download.len(), 1);
+    }
+
+    #[test]
+    fn sync_plan_does_not_match_guidless_episodes_without_publication_date() {
+        let stored = StoredEpisode {
+            pub_date: None,
+            ..stored_guidless(TOKEN_A_URL, "Sega Nomad", EPISODE_TIME)
+        };
+        let mut episode = guidless(TOKEN_B_URL, "Sega Nomad", EPISODE_TIME);
+        episode.pub_date = None;
+
+        let plan = plan_for_rotated_token(stored, episode);
+
+        assert_eq!(plan.to_download.len(), 1);
     }
 
     #[test]

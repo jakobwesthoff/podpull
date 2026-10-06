@@ -1815,4 +1815,54 @@ mod tests {
         assert!(second.damaged.is_empty());
         assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
     }
+
+    #[tokio::test]
+    async fn sync_does_not_store_guidless_episode_again_after_url_token_change() {
+        let dir = tempdir().unwrap();
+        let feed = |token: &str| {
+            format!(
+                r#"<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Podcast</title>
+    <description>A test podcast</description>
+    <item>
+      <title>Members Only</title>
+      <pubDate>Thu, 19 Dec 2024 10:25:22 GMT</pubDate>
+      <enclosure url="https://example.com/media/{}/episode-uuid.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>"#,
+                token
+            )
+        };
+        let sync_feed = |feed_xml: String| {
+            let dir = dir.path().to_path_buf();
+            async move {
+                let client = MockHttpClient {
+                    feed_xml,
+                    audio_data: b"fake audio".to_vec(),
+                };
+                sync_with(&dir, &client, &SyncOptions::default()).await
+            }
+        };
+
+        sync_feed(feed("token-a")).await;
+        let result = sync_feed(feed("token-b")).await;
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.skipped, 1);
+        let audio_files = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "mp3")
+            })
+            .count();
+        assert_eq!(audio_files, 1);
+    }
 }
