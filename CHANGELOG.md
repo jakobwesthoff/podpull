@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - If an episode's metadata cannot be written, its freshly downloaded audio is removed again instead of being left without metadata, which made the next sync store the episode a second time
 - Quiet mode (`-q`) lists failed and damaged episodes and warnings on stderr instead of hiding them
 - `-c 0` is rejected with a message instead of crashing
+- Quiet mode (`-q`) no longer prints the banner, so a clean quiet run prints nothing
 
 ### Changed
 

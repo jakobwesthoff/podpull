@@ -505,12 +505,16 @@ fn sync_options(args: &Args) -> SyncOptions {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!(
-        "\n{}{} {}\n",
-        MICROPHONE,
-        "podpull".bold().magenta(),
-        "- Podcast Downloader".dimmed()
-    );
+    // Quiet output carries only problems, so a script capturing it sees
+    // nothing on a clean run.
+    if !args.quiet {
+        println!(
+            "\n{}{} {}\n",
+            MICROPHONE,
+            "podpull".bold().magenta(),
+            "- Podcast Downloader".dimmed()
+        );
+    }
 
     let client = ReqwestClient::new();
 
