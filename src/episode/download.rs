@@ -16,7 +16,24 @@ use crate::http::HttpClient;
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 
 /// Context for tracking a download in concurrent scenarios
+///
+/// ```
+/// // The second of five downloads, shown in the first progress slot
+/// let context = podpull::DownloadContext::new(0, 1, 5);
+/// assert_eq!(context.total_to_download, 5);
+/// ```
+///
+/// A struct literal is rejected, as it would break with every new field:
+///
+/// ```compile_fail,E0639
+/// let context = podpull::DownloadContext {
+///     download_id: 0,
+///     episode_index: 1,
+///     total_to_download: 5,
+/// };
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DownloadContext {
     /// Slot ID (0 to max_concurrent-1) for progress bar management
     pub download_id: usize,
@@ -27,12 +44,32 @@ pub struct DownloadContext {
 }
 
 /// Result of a successful download
+///
+/// Only a download produces one; a struct literal is rejected:
+///
+/// ```compile_fail,E0639
+/// let result = podpull::DownloadResult {
+///     bytes_downloaded: 18,
+///     content_hash: "sha256:0".to_string(),
+/// };
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DownloadResult {
     /// Number of bytes downloaded
     pub bytes_downloaded: u64,
     /// SHA-256 hash of the downloaded content (format: "sha256:...")
     pub content_hash: String,
+}
+
+impl DownloadContext {
+    pub fn new(download_id: usize, episode_index: usize, total_to_download: usize) -> Self {
+        Self {
+            download_id,
+            episode_index,
+            total_to_download,
+        }
+    }
 }
 
 /// Read size for hashing stored audio; large reads keep the number of
