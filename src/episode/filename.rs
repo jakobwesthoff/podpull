@@ -2,10 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::HashSet;
+
+use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
+
 use crate::feed::Episode;
 
 /// Maximum length for the title portion of a filename
 const MAX_TITLE_LENGTH: usize = 100;
+
+/// Number of hex digits of the GUID hash in a last-resort filename suffix
+const HASH_SUFFIX_LENGTH: usize = 8;
 
 /// Generate a filename stem (without extension) for an episode
 ///
@@ -49,10 +57,77 @@ pub fn get_audio_extension(episode: &Episode) -> String {
 }
 
 /// Generate a complete filename for an episode (with extension)
+///
+/// This is the base name only. Episodes sharing title and publication day
+/// get the same base name; [`generate_unique_filename_stem`] resolves that.
 pub fn generate_filename(episode: &Episode) -> String {
     let stem = generate_filename_stem(episode);
     let ext = get_audio_extension(episode);
     format!("{}.{}", stem, ext)
+}
+
+/// Key under which a filename stem occupies its place in a directory
+///
+/// Filesystems commonly treat names as equal that differ in letter case
+/// (APFS, SMB shares) or in Unicode normalization: macOS network shares list
+/// "ä" decomposed into "a" and a combining diaeresis, while feed titles use
+/// the composed form. Comparing stems by this key makes all of those count
+/// as the same name.
+pub fn filename_claim_key(stem: &str) -> String {
+    stem.nfc().collect::<String>().to_lowercase()
+}
+
+/// Generate a filename stem whose claim key is not in `claimed_keys`
+///
+/// Feeds can contain distinct episodes sharing title and publication day,
+/// which [`generate_filename_stem`] maps to the same name. Downloading both
+/// under it would let one overwrite the other. The candidates, in order:
+///
+/// 1. the base stem, `YYYY-MM-DD-<title>`;
+/// 2. the publication time added, `YYYY-MM-DD-HHMMSS-<title>`, rendered in
+///    the offset the feed states, like the date;
+/// 3. the base stem with the first hex digits of the SHA-256 of the GUID,
+///    for undated episodes or when the time is taken as well;
+/// 4. that hashed stem with a counter, for the remote case of a hash prefix
+///    shared by two GUIDs.
+///
+/// `claimed_keys` holds [`filename_claim_key`] values.
+pub fn generate_unique_filename_stem(episode: &Episode, claimed_keys: &HashSet<String>) -> String {
+    let is_free = |stem: &str| !claimed_keys.contains(&filename_claim_key(stem));
+
+    let base = generate_filename_stem(episode);
+    if is_free(&base) {
+        return base;
+    }
+
+    if let Some(pub_date) = episode.pub_date {
+        let timed = format!(
+            "{}-{}",
+            pub_date.format("%Y-%m-%d-%H%M%S"),
+            sanitize_title(&episode.title)
+        );
+        if is_free(&timed) {
+            return timed;
+        }
+    }
+
+    // Parsed feeds always carry a GUID, since parsing substitutes the raw
+    // enclosure URL string for a missing one. The fallback to the parsed URL
+    // here serves episodes constructed by library users.
+    let identity = episode
+        .guid
+        .as_deref()
+        .unwrap_or(episode.enclosure.url.as_str());
+    let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let hashed = format!("{}-{}", base, &hash[..HASH_SUFFIX_LENGTH]);
+
+    let mut candidate = hashed.clone();
+    let mut counter = 2;
+    while !is_free(&candidate) {
+        candidate = format!("{}-{}", hashed, counter);
+        counter += 1;
+    }
+    candidate
 }
 
 /// Sanitize a title for use in a filename
@@ -511,6 +586,142 @@ mod tests {
         );
 
         assert_eq!(generate_filename(&episode), "2024-01-16-Audio Book.m4a");
+    }
+
+    // === Claim key tests ===
+
+    #[test]
+    fn claim_key_composes_decomposed_characters() {
+        assert_eq!(
+            filename_claim_key("Neuzuga\u{0308}nge #4"),
+            filename_claim_key("Neuzug\u{00e4}nge #4")
+        );
+    }
+
+    #[test]
+    fn claim_key_ignores_letter_case() {
+        assert_eq!(filename_claim_key("Sega NOMAD"), "sega nomad");
+    }
+
+    #[test]
+    fn claim_key_keeps_distinct_names_apart() {
+        assert_ne!(
+            filename_claim_key("Episode 1"),
+            filename_claim_key("Episode 2")
+        );
+    }
+
+    // === Unique filename stem tests ===
+
+    fn make_nomad_episode(guid: Option<&str>, date: Option<&str>) -> Episode {
+        let mut episode = make_episode("Sega Nomad", date, "https://example.com/nomad.mp3");
+        episode.guid = guid.map(String::from);
+        episode
+    }
+
+    const NOMAD_DATE: &str = "Thu, 19 Dec 2024 10:25:22 +0000";
+
+    fn claims(stems: &[&str]) -> HashSet<String> {
+        stems.iter().map(|stem| filename_claim_key(stem)).collect()
+    }
+
+    fn hash_prefix(identity: &str) -> String {
+        format!("{:x}", Sha256::digest(identity.as_bytes()))[..8].to_string()
+    }
+
+    #[test]
+    fn unique_stem_is_base_stem_when_unclaimed() {
+        let episode = make_nomad_episode(Some("nomad-guid"), Some(NOMAD_DATE));
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["2024-12-19-Other"])),
+            "2024-12-19-Sega Nomad"
+        );
+    }
+
+    #[test]
+    fn unique_stem_adds_time_of_day_when_base_is_claimed() {
+        let episode = make_nomad_episode(Some("nomad-guid"), Some(NOMAD_DATE));
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["2024-12-19-Sega Nomad"])),
+            "2024-12-19-102522-Sega Nomad"
+        );
+    }
+
+    #[test]
+    fn unique_stem_renders_time_of_day_in_the_feed_offset() {
+        let episode =
+            make_nomad_episode(Some("nomad-guid"), Some("Thu, 19 Dec 2024 23:05:09 -0800"));
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["2024-12-19-Sega Nomad"])),
+            "2024-12-19-230509-Sega Nomad"
+        );
+    }
+
+    #[test]
+    fn unique_stem_detects_claims_in_another_normalization_and_case() {
+        let mut episode = make_nomad_episode(Some("guid"), Some(NOMAD_DATE));
+        episode.title = "Neuzug\u{00e4}nge #4".to_string();
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["2024-12-19-NEUZUGA\u{0308}NGE #4"])),
+            "2024-12-19-102522-Neuzug\u{00e4}nge #4"
+        );
+    }
+
+    #[test]
+    fn unique_stem_falls_back_to_guid_hash_when_time_of_day_is_claimed() {
+        let episode = make_nomad_episode(Some("nomad-guid"), Some(NOMAD_DATE));
+        let claimed = claims(&["2024-12-19-Sega Nomad", "2024-12-19-102522-Sega Nomad"]);
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claimed),
+            format!("2024-12-19-Sega Nomad-{}", hash_prefix("nomad-guid"))
+        );
+    }
+
+    #[test]
+    fn unique_stem_falls_back_to_guid_hash_without_publication_date() {
+        let episode = make_nomad_episode(Some("nomad-guid"), None);
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["undated-Sega Nomad"])),
+            format!("undated-Sega Nomad-{}", hash_prefix("nomad-guid"))
+        );
+    }
+
+    #[test]
+    fn unique_stem_hashes_enclosure_url_without_guid() {
+        let episode = make_nomad_episode(None, None);
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["undated-Sega Nomad"])),
+            format!(
+                "undated-Sega Nomad-{}",
+                hash_prefix("https://example.com/nomad.mp3")
+            )
+        );
+    }
+
+    #[test]
+    fn unique_stem_counts_up_when_every_candidate_is_claimed() {
+        let episode = make_nomad_episode(Some("nomad-guid"), None);
+        let hashed = format!("undated-Sega Nomad-{}", hash_prefix("nomad-guid"));
+        let counted = format!("{}-2", hashed);
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claims(&["undated-Sega Nomad", &hashed])),
+            counted
+        );
+        assert_eq!(
+            generate_unique_filename_stem(
+                &episode,
+                &claims(&["undated-Sega Nomad", &hashed, &counted])
+            ),
+            format!("{}-3", hashed)
+        );
     }
 
     // === Collapse separators tests ===

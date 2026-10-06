@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::episode::{generate_filename_stem, get_audio_extension};
+use crate::episode::{filename_claim_key, generate_unique_filename_stem, get_audio_extension};
 use crate::error::StateError;
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
@@ -24,6 +24,9 @@ pub struct OutputState {
     pub partial_files_cleaned: usize,
     /// Episode metadata files that exist but could not be read or parsed
     pub unreadable_metadata: Vec<PathBuf>,
+    /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
+    /// the output directory, which new downloads must not reuse
+    pub claimed_stems: HashSet<String>,
 }
 
 /// An episode scheduled for download, with the files it is written to
@@ -77,6 +80,7 @@ pub fn scan_output_dir(
             output_dir: output_dir.to_path_buf(),
             partial_files_cleaned,
             unreadable_metadata: Vec::new(),
+            claimed_stems: HashSet::new(),
         });
     }
 
@@ -123,6 +127,17 @@ pub fn scan_output_dir(
         }
     }
 
+    // Every file occupies its stem, whether or not metadata says which
+    // episode it belongs to. Audio without readable metadata may be the only
+    // copy of an episode that has since left the feed, so a new download
+    // must not take its name. The cost is a second copy when that audio
+    // turns out to be a leftover of the very episode being downloaded.
+    let claimed_stems = existing_files
+        .iter()
+        .filter_map(|name| Path::new(name).file_stem())
+        .map(|stem| filename_claim_key(&stem.to_string_lossy()))
+        .collect();
+
     // Process JSON metadata files with progress (this is the slow part on network shares)
     let total_json_files = json_files.len();
 
@@ -159,6 +174,7 @@ pub fn scan_output_dir(
         output_dir: output_dir.to_path_buf(),
         partial_files_cleaned,
         unreadable_metadata,
+        claimed_stems,
     })
 }
 
@@ -198,11 +214,15 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
     });
 
     // The plan decides where every download goes, so that the paths of all
-    // downloads are known before any of them starts.
+    // downloads are known before any of them starts. Names are handed out in
+    // download order and each one is claimed right away, so episodes that
+    // share title and day within this run get distinct names as well.
+    let mut claimed_stems = state.claimed_stems.clone();
     let to_download = to_download
         .into_iter()
         .map(|episode| {
-            let stem = generate_filename_stem(&episode);
+            let stem = generate_unique_filename_stem(&episode, &claimed_stems);
+            claimed_stems.insert(filename_claim_key(&stem));
             PlannedDownload {
                 audio_filename: format!("{}.{}", stem, get_audio_extension(&episode)),
                 metadata_filename: format!("{}.json", stem),
@@ -274,7 +294,12 @@ mod tests {
             output_dir: PathBuf::from("/tmp"),
             partial_files_cleaned: 0,
             unreadable_metadata: Vec::new(),
+            claimed_stems: HashSet::new(),
         }
+    }
+
+    fn make_time(rfc2822: &str) -> Option<DateTime<FixedOffset>> {
+        Some(DateTime::parse_from_rfc2822(rfc2822).unwrap())
     }
 
     fn make_date(year: i32, month: u32, day: u32) -> DateTime<FixedOffset> {
@@ -346,6 +371,37 @@ mod tests {
             vec![dir.path().join("truncated.json")]
         );
         assert!(state.downloaded_guids.contains("readable-guid"));
+    }
+
+    #[test]
+    fn scan_claims_the_stem_of_every_existing_file() {
+        let dir = tempdir().unwrap();
+        let episode = make_episode("Readable", Some("readable-guid"));
+        write_episode_metadata(
+            &episode,
+            "2024-01-15-Readable.mp3",
+            None,
+            &dir.path().join("2024-01-15-Readable.json"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("2024-01-15-Readable.mp3"), b"audio").unwrap();
+        std::fs::write(dir.path().join("2024-01-16-Orphan.m4a"), b"audio").unwrap();
+        std::fs::write(dir.path().join("2024-01-17-Broken.json"), b"{").unwrap();
+        std::fs::write(dir.path().join("2019-12-27-Neuzuga\u{0308}nge #4.mp3"), b"").unwrap();
+        std::fs::write(dir.path().join("2024-01-18-Cut.mp3.partial"), b"").unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        let expected: HashSet<String> = [
+            "2024-01-15-Readable",
+            "2024-01-16-Orphan",
+            "2024-01-17-Broken",
+            "2019-12-27-Neuzug\u{00e4}nge #4",
+        ]
+        .iter()
+        .map(|stem| filename_claim_key(stem))
+        .collect();
+        assert_eq!(state.claimed_stems, expected);
     }
 
     #[test]
@@ -433,6 +489,63 @@ mod tests {
         assert_eq!(
             plan.to_download[0].metadata_filename,
             "2024-01-16-Audio Book.json"
+        );
+    }
+
+    #[test]
+    fn sync_plan_gives_colliding_episodes_distinct_stems_newest_first() {
+        let older = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-older"),
+            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
+        );
+        let newer = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-newer"),
+            make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
+        );
+
+        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]));
+
+        let names: Vec<_> = plan
+            .to_download
+            .iter()
+            .map(|planned| {
+                (
+                    planned.audio_filename.as_str(),
+                    planned.metadata_filename.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("2024-12-19-Sega Nomad.mp3", "2024-12-19-Sega Nomad.json"),
+                (
+                    "2024-12-19-102522-Sega Nomad.mp3",
+                    "2024-12-19-102522-Sega Nomad.json"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn sync_plan_avoids_stems_claimed_on_disk() {
+        let mut state = state_with_guids(&[]);
+        state
+            .claimed_stems
+            .insert(filename_claim_key("2024-12-19-Sega Nomad"));
+        let episode = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-1"),
+            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
+        );
+
+        let plan = create_sync_plan(vec![episode], &state);
+
+        assert_eq!(
+            plan.to_download[0].audio_filename,
+            "2024-12-19-102522-Sega Nomad.mp3"
         );
     }
 
