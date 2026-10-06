@@ -17,7 +17,9 @@ use crate::feed::{
 use crate::http::HttpClient;
 use crate::metadata::{stage_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
-use crate::state::{Collision, PlannedDownload, create_sync_plan, scan_output_dir};
+use crate::state::{
+    CheckTarget, PlannedDownload, archive_check_targets, create_sync_plan, scan_output_dir,
+};
 
 /// Options for podcast synchronization
 #[derive(Debug, Clone)]
@@ -28,9 +30,25 @@ pub struct SyncOptions {
     pub max_concurrent: usize,
     /// Continue downloading if individual episodes fail
     pub continue_on_error: bool,
-    /// Download an existing episode again when a new episode collides with
-    /// it and its audio no longer matches the hash recorded at download
-    pub repair_mismatched_audio: bool,
+    /// Which stored audio to check against its recorded hash, and whether
+    /// to download mismatched episodes again
+    pub audio_check: AudioCheck,
+}
+
+/// Which stored audio a sync checks against the hash recorded when it was
+/// downloaded
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioCheck {
+    /// Only audio a new episode's base filename collides with, which is
+    /// where podpull 1.1.2 and earlier could leave damage; mismatches are
+    /// reported
+    #[default]
+    Collisions,
+    /// All stored audio, reading the whole archive; mismatches are reported
+    Verify,
+    /// All stored audio; mismatched episodes still in the feed are
+    /// downloaded again under their existing names
+    Repair,
 }
 
 impl Default for SyncOptions {
@@ -39,7 +57,7 @@ impl Default for SyncOptions {
             limit: None,
             max_concurrent: 3,
             continue_on_error: true,
-            repair_mismatched_audio: false,
+            audio_check: AudioCheck::Collisions,
         }
     }
 }
@@ -68,7 +86,7 @@ pub enum DamageRemedy {
     /// The episode is downloaded again under its existing names
     Repairing,
     /// The episode is still in the feed, so a run with
-    /// `repair_mismatched_audio` downloads it again
+    /// [`AudioCheck::Repair`] downloads it again
     RepairAvailable,
     /// No episode in the feed matches the stored one, so it cannot be
     /// downloaded again
@@ -131,10 +149,14 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let plan = create_sync_plan(podcast.episodes.clone(), &state, options.limit);
     let limited = plan.new_episodes - plan.to_download.len();
 
-    let verification = verify_collided_audio(
-        &plan.collisions,
+    let targets = match options.audio_check {
+        AudioCheck::Collisions => plan.collisions.clone(),
+        AudioCheck::Verify | AudioCheck::Repair => archive_check_targets(&state, &plan),
+    };
+    let verification = verify_stored_audio(
+        &targets,
         state.output_dir(),
-        options.repair_mismatched_audio,
+        options.audio_check == AudioCheck::Repair,
         &reporter,
     )
     .await;
@@ -412,7 +434,7 @@ async fn download_planned<C: HttpClient>(
     Ok(())
 }
 
-/// Outcome of checking the audio files that planned downloads collide with
+/// Outcome of checking stored audio against its recorded hashes
 struct Verification {
     damaged: Vec<DamagedAudio>,
     /// Downloads that replace mismatched audio of episodes still in the feed
@@ -422,16 +444,16 @@ struct Verification {
     affected_present_guids: HashSet<String>,
 }
 
-/// Check the audio files that planned downloads collide with
+/// Check stored audio against the hashes recorded when it was downloaded
 ///
-/// podpull 1.1.2 and earlier downloaded episodes sharing a filename into one
-/// file at the same time, leaving bytes of both behind. Such a file no longer
-/// matches the hash its metadata recorded. Tags edited by the user cause a
-/// mismatch as well, so a mismatch is only repaired when `repair` is set:
-/// the episode is then downloaded again under its existing names, which
-/// requires it to still be in the feed in the same audio format.
-async fn verify_collided_audio(
-    collisions: &[Collision],
+/// A file that no longer matches may hold bytes of two episodes, as podpull
+/// 1.1.2 and earlier downloaded episodes sharing a filename into one file at
+/// the same time, or may have decayed on disk. Tags edited by the user
+/// cause a mismatch as well, so a mismatch is only repaired when `repair`
+/// is set: the episode is then downloaded again under its existing names,
+/// which requires it to still be in the feed in the same audio format.
+async fn verify_stored_audio(
+    targets: &[CheckTarget],
     output_dir: &Path,
     repair: bool,
     reporter: &SharedProgressReporter,
@@ -442,8 +464,8 @@ async fn verify_collided_audio(
         affected_present_guids: HashSet::new(),
     };
 
-    for collision in collisions {
-        let stored = &collision.stored;
+    for target in targets {
+        let stored = &target.stored;
         let Some(recorded_hash) = &stored.content_hash else {
             continue;
         };
@@ -478,7 +500,7 @@ async fn verify_collided_audio(
             .extension()
             .map(|ext| ext.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let remedy = match &collision.feed_episode {
+        let remedy = match &target.feed_episode {
             None => DamageRemedy::NoFeedEpisode,
             Some(episode)
                 if !get_audio_extension(episode).eq_ignore_ascii_case(&stored_extension) =>
@@ -494,7 +516,7 @@ async fn verify_collided_audio(
             remedy,
         });
 
-        if let Some(guid) = collision
+        if let Some(guid) = target
             .feed_episode
             .as_ref()
             .and_then(|episode| episode.guid.clone())
@@ -502,7 +524,7 @@ async fn verify_collided_audio(
             verification.affected_present_guids.insert(guid);
         }
 
-        match (&collision.feed_episode, remedy) {
+        match (&target.feed_episode, remedy) {
             (Some(episode), DamageRemedy::Repairing) => {
                 verification.repairs.push(PlannedDownload {
                     episode: episode.clone(),
@@ -1329,7 +1351,7 @@ mod tests {
         let reporter = Arc::new(RecordingReporter::default());
         let options = SyncOptions {
             limit,
-            repair_mismatched_audio: true,
+            audio_check: AudioCheck::Repair,
             ..Default::default()
         };
         let result = sync_podcast(
@@ -1708,5 +1730,89 @@ mod tests {
                 .join(format!("{}.json.partial", NOMAD_STEM))
                 .exists()
         );
+    }
+
+    // =========================================================
+    // Checking the whole archive
+    // =========================================================
+
+    async fn sync_checking(
+        dir: &Path,
+        items: &[FeedItem],
+        audio_check: AudioCheck,
+    ) -> (SyncResult, Vec<ProgressEvent>) {
+        let reporter = Arc::new(RecordingReporter::default());
+        let result = sync_podcast(
+            &client_for(items),
+            "https://example.com/feed.xml",
+            dir,
+            &SyncOptions {
+                audio_check,
+                ..Default::default()
+            },
+            reporter.clone(),
+        )
+        .await
+        .unwrap();
+        (result, reporter.events())
+    }
+
+    #[tokio::test]
+    async fn sync_checks_only_colliding_audio_by_default() {
+        let dir = tempdir().unwrap();
+        store_damaged_nomad(dir.path());
+
+        let (result, events) =
+            sync_checking(dir.path(), &[NOMAD_REUPLOAD], AudioCheck::Collisions).await;
+
+        assert!(result.damaged.is_empty());
+        assert!(verifying_events(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_verify_reports_damaged_audio_without_a_collision() {
+        let dir = tempdir().unwrap();
+        let audio = store_damaged_nomad(dir.path());
+
+        let (result, events) =
+            sync_checking(dir.path(), &[NOMAD_REUPLOAD], AudioCheck::Verify).await;
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.damaged, vec![damage(DamageRemedy::RepairAvailable)]);
+        assert_eq!(
+            verifying_events(&events),
+            vec![format!("{}.mp3", NOMAD_STEM)]
+        );
+        assert_eq!(std::fs::read(&audio).unwrap(), b"interleaved audio");
+    }
+
+    #[tokio::test]
+    async fn sync_repair_fixes_damaged_audio_without_a_collision() {
+        let dir = tempdir().unwrap();
+        let audio = store_damaged_nomad(dir.path());
+
+        let (result, _) = sync_checking(dir.path(), &[NOMAD_REUPLOAD], AudioCheck::Repair).await;
+
+        assert_eq!(result.downloaded, 1);
+        assert!(result.damaged.is_empty());
+        assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
+    }
+
+    #[tokio::test]
+    async fn sync_repair_fixes_damage_reported_by_an_earlier_run() {
+        let dir = tempdir().unwrap();
+        let audio = store_damaged_nomad(dir.path());
+        let feed = [NOMAD_REUPLOAD, NOMAD_ORIGINAL];
+
+        // The first run downloads the colliding episode and reports the
+        // damage; afterwards nothing collides any more.
+        let (first, _) = sync_checking(dir.path(), &feed, AudioCheck::Collisions).await;
+        assert_eq!(first.damaged.len(), 1);
+
+        let (second, _) = sync_checking(dir.path(), &feed, AudioCheck::Repair).await;
+
+        assert_eq!(second.downloaded, 1);
+        assert!(second.damaged.is_empty());
+        assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
     }
 }

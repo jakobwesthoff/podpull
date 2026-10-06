@@ -31,7 +31,7 @@ pub use metadata::{
 };
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
 pub use state::{
-    Collision, OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata,
-    create_sync_plan, scan_output_dir,
+    CheckTarget, OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata,
+    archive_check_targets, create_sync_plan, scan_output_dir,
 };
-pub use sync::{DamageRemedy, DamagedAudio, SyncOptions, SyncResult, sync_podcast};
+pub use sync::{AudioCheck, DamageRemedy, DamagedAudio, SyncOptions, SyncResult, sync_podcast};

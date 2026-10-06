@@ -13,7 +13,7 @@ use console::Emoji;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use podpull::{
-    DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter, ReqwestClient,
+    AudioCheck, DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter, ReqwestClient,
     SharedProgressReporter, SyncOptions, sync_podcast,
 };
 
@@ -56,8 +56,13 @@ struct Args {
     #[arg(short, long)]
     quiet: bool,
 
-    /// Download an existing episode again when a new episode would take its
-    /// filename and its audio no longer matches the hash recorded at download
+    /// Check every downloaded audio file against the hash recorded when it
+    /// was downloaded and report mismatches (reads the whole archive)
+    #[arg(long)]
+    verify: bool,
+
+    /// Like --verify, and download mismatched episodes still in the feed
+    /// again under their existing filenames
     #[arg(long)]
     repair: bool,
 }
@@ -453,7 +458,14 @@ fn sync_options(args: &Args) -> SyncOptions {
         limit: args.limit,
         max_concurrent: args.concurrent,
         continue_on_error: true,
-        repair_mismatched_audio: args.repair,
+        // --repair includes everything --verify does.
+        audio_check: if args.repair {
+            AudioCheck::Repair
+        } else if args.verify {
+            AudioCheck::Verify
+        } else {
+            AudioCheck::Collisions
+        },
     }
 }
 
@@ -663,7 +675,26 @@ mod tests {
         assert_eq!(options.limit, Some(10));
         assert_eq!(options.max_concurrent, 5);
         assert!(options.continue_on_error);
-        assert!(options.repair_mismatched_audio);
+        assert_eq!(options.audio_check, AudioCheck::Repair);
+    }
+
+    #[test]
+    fn sync_options_check_the_archive_for_verify() {
+        let args = Args::try_parse_from(["podpull", "--verify", "feed.xml", "out"]).unwrap();
+        assert_eq!(sync_options(&args).audio_check, AudioCheck::Verify);
+    }
+
+    #[test]
+    fn sync_options_check_collisions_by_default() {
+        let args = Args::try_parse_from(["podpull", "feed.xml", "out"]).unwrap();
+        assert_eq!(sync_options(&args).audio_check, AudioCheck::Collisions);
+    }
+
+    #[test]
+    fn repair_takes_precedence_over_verify() {
+        let args =
+            Args::try_parse_from(["podpull", "--verify", "--repair", "feed.xml", "out"]).unwrap();
+        assert_eq!(sync_options(&args).audio_check, AudioCheck::Repair);
     }
 
     #[test]

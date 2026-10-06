@@ -156,17 +156,18 @@ pub struct SyncPlan {
     pub new_episodes: usize,
     /// Stored episodes whose base filename a download in this run would
     /// have taken, each listed once
-    pub collisions: Vec<Collision>,
+    ///
+    /// Only the base name is of interest: podpull 1.1.2 and earlier wrote
+    /// every episode under its base name, so only a file there can hold the
+    /// bytes of two episodes downloaded at once. Names with a time or hash
+    /// suffix are written with exclusive partial files.
+    pub collisions: Vec<CheckTarget>,
 }
 
-/// A stored episode whose base filename a planned download shares
-///
-/// Only the base name is of interest: podpull 1.1.2 and earlier wrote every
-/// episode under its base name, so only a file there can hold the bytes of
-/// two episodes downloaded at once. Names with a time or hash suffix are
-/// written with exclusive partial files.
+/// A stored episode whose audio is checked against its recorded hash,
+/// with the feed episode it belongs to
 #[derive(Debug, Clone)]
-pub struct Collision {
+pub struct CheckTarget {
     pub stored: StoredEpisode,
     /// The feed's episode with the stored episode's GUID, if still listed
     pub feed_episode: Option<Episode>,
@@ -387,7 +388,7 @@ pub fn create_sync_plan(
 
     // A stored episode under a planned download's base name is what the
     // collision check looks at, once per stored episode.
-    let mut collisions: Vec<Collision> = Vec::new();
+    let mut collisions: Vec<CheckTarget> = Vec::new();
     for episode in &to_download {
         let base_key = filename_claim_key(&generate_filename_stem(episode));
         if let Some(stored) = state.stored_episode(&base_key)
@@ -395,14 +396,7 @@ pub fn create_sync_plan(
                 .iter()
                 .any(|collision| collision.stored.metadata_filename == stored.metadata_filename)
         {
-            let feed_episode = already_present
-                .iter()
-                .find(|present| present.guid.is_some() && present.guid == stored.guid)
-                .cloned();
-            collisions.push(Collision {
-                stored: stored.clone(),
-                feed_episode,
-            });
+            collisions.push(check_target(stored, &already_present));
         }
     }
 
@@ -431,6 +425,30 @@ pub fn create_sync_plan(
         total_episodes,
         new_episodes,
         collisions,
+    }
+}
+
+/// Every stored episode, as targets for checking the whole archive
+///
+/// Ordered by audio filename, so a check runs in the same order each time.
+pub fn archive_check_targets(state: &OutputState, plan: &SyncPlan) -> Vec<CheckTarget> {
+    let mut targets: Vec<_> = state
+        .stored_episodes()
+        .map(|stored| check_target(stored, &plan.already_present))
+        .collect();
+    targets.sort_by(|a, b| a.stored.audio_filename.cmp(&b.stored.audio_filename));
+    targets
+}
+
+/// Pair a stored episode with the present feed episode of the same GUID
+fn check_target(stored: &StoredEpisode, present: &[Episode]) -> CheckTarget {
+    let feed_episode = present
+        .iter()
+        .find(|episode| episode.guid.is_some() && episode.guid == stored.guid)
+        .cloned();
+    CheckTarget {
+        stored: stored.clone(),
+        feed_episode,
     }
 }
 
@@ -1022,6 +1040,35 @@ mod tests {
         let plan = create_sync_plan(episodes, &state_with_guids(&[]), None);
 
         assert_eq!(plan.to_download.len(), 2);
+    }
+
+    #[test]
+    fn archive_check_targets_cover_every_stored_episode() {
+        let state = state_with_stored(vec![
+            stored("2024-01-02-B", "B", "guid-b"),
+            stored("2024-01-01-A", "A", "guid-gone"),
+        ]);
+        let present = make_episode_with_date("B", Some("guid-b"), Some(make_date(2024, 1, 2)));
+        let plan = create_sync_plan(vec![present], &state, None);
+
+        let targets = archive_check_targets(&state, &plan);
+
+        let summary: Vec<_> = targets
+            .iter()
+            .map(|target| {
+                (
+                    target.stored.audio_filename.as_str(),
+                    target
+                        .feed_episode
+                        .as_ref()
+                        .map(|episode| episode.title.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![("2024-01-01-A.mp3", None), ("2024-01-02-B.mp3", Some("B"))]
+        );
     }
 
     #[test]
