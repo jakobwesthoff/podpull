@@ -968,4 +968,57 @@ mod tests {
         assert_eq!(result.failed, 0);
         assert!(mismatch_events(&events).is_empty());
     }
+
+    // =========================================================
+    // Failures during the download loop
+    // =========================================================
+
+    #[tokio::test]
+    async fn sync_counts_failed_metadata_write_as_failure() {
+        let dir = tempdir().unwrap();
+        // The directory scan cannot remove a directory, so it keeps blocking
+        // the partial file the metadata is written through.
+        std::fs::create_dir(dir.path().join(format!("{}.json.partial", NOMAD_STEM))).unwrap();
+
+        let client = client_for(&[NOMAD_ORIGINAL]);
+        let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.failed_episodes[0].0, "SFT Bits: Sega Nomad");
+        assert!(dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
+    }
+
+    #[tokio::test]
+    async fn sync_counts_occupied_partial_file_as_failure() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(format!("{}.mp3.partial", NOMAD_STEM))).unwrap();
+
+        let client = client_for(&[NOMAD_ORIGINAL]);
+        let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.failed, 1);
+        assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
+    }
+
+    #[tokio::test]
+    async fn sync_fails_when_every_download_fails_without_continue_on_error() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(format!("{}.mp3.partial", NOMAD_STEM))).unwrap();
+
+        let result = sync_podcast(
+            &client_for(&[NOMAD_ORIGINAL]),
+            "https://example.com/feed.xml",
+            dir.path(),
+            &SyncOptions {
+                continue_on_error: false,
+                ..Default::default()
+            },
+            NoopReporter::shared(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(SyncError::AllDownloadsFailed)));
+    }
 }
