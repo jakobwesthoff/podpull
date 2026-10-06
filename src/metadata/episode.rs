@@ -12,28 +12,7 @@ use crate::error::MetadataError;
 use crate::feed::Episode;
 
 /// Serializable metadata for a downloaded episode
-///
-/// Built with [`EpisodeMetadata::from_episode`] or read from disk; a
-/// struct literal is rejected, as it would break with every new field:
-///
-/// ```compile_fail,E0639
-/// let metadata = podpull::EpisodeMetadata {
-///     title: "Sega Nomad".to_string(),
-///     description: None,
-///     pub_date: None,
-///     guid: None,
-///     additional_guids: Vec::new(),
-///     original_url: "https://example.com/nomad.mp3".to_string(),
-///     downloaded_at: "2024-12-19T12:00:00Z".to_string(),
-///     duration: None,
-///     episode_number: None,
-///     season_number: None,
-///     audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
-///     content_hash: None,
-/// };
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct EpisodeMetadata {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]

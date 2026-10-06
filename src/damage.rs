@@ -4,7 +4,6 @@
 
 /// What happens with stored audio that is damaged or missing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum DamageRemedy {
     /// The episode is downloaded again under its existing names
     Repairing,
@@ -21,7 +20,6 @@ pub enum DamageRemedy {
 
 /// How stored audio differs from what its metadata records
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum DamageKind {
     /// The audio file no longer matches the hash recorded when it was
     /// downloaded
@@ -32,27 +30,10 @@ pub enum DamageKind {
 
 /// Stored audio that is damaged or missing and was left as it is
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct DamagedAudio {
     pub episode_title: String,
     pub audio_filename: String,
     pub kind: DamageKind,
     /// Never [`DamageRemedy::Repairing`]: repaired audio is not damaged
     pub remedy: DamageRemedy,
-}
-
-impl DamagedAudio {
-    pub fn new(
-        episode_title: impl Into<String>,
-        audio_filename: impl Into<String>,
-        kind: DamageKind,
-        remedy: DamageRemedy,
-    ) -> Self {
-        Self {
-            episode_title: episode_title.into(),
-            audio_filename: audio_filename.into(),
-            kind,
-            remedy,
-        }
-    }
 }

@@ -14,23 +14,7 @@ use crate::feed::Podcast;
 const PODCAST_METADATA_FILENAME: &str = "podcast.json";
 
 /// Serializable metadata for a podcast feed
-///
-/// Built with [`PodcastMetadata::from_podcast`] or read from disk; a
-/// struct literal is rejected, as it would break with every new field:
-///
-/// ```compile_fail,E0639
-/// let metadata = podpull::PodcastMetadata {
-///     title: "Stay Forever".to_string(),
-///     description: None,
-///     link: None,
-///     author: None,
-///     image_url: None,
-///     feed_url: "https://example.com/feed.xml".to_string(),
-///     updated_at: "2024-12-19T12:00:00Z".to_string(),
-/// };
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct PodcastMetadata {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]

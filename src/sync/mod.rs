@@ -22,27 +22,7 @@ use downloads::download_all;
 use verify::verify_stored_audio;
 
 /// Options for podcast synchronization
-///
-/// New options can be added without breaking callers, so outside this crate
-/// options start from [`Default`] and set the fields they need:
-///
-/// ```
-/// let mut options = podpull::SyncOptions::default();
-/// options.limit = Some(10);
-/// ```
-///
-/// A struct literal is rejected, as it would break with every new field:
-///
-/// ```compile_fail,E0639
-/// let options = podpull::SyncOptions {
-///     limit: None,
-///     max_concurrent: 3,
-///     continue_on_error: true,
-///     audio_check: podpull::AudioCheck::Collisions,
-/// };
-/// ```
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct SyncOptions {
     /// Maximum number of episodes to download (None = all)
     pub limit: Option<usize>,
@@ -58,7 +38,6 @@ pub struct SyncOptions {
 /// Which stored audio a sync checks against the hash recorded when it was
 /// downloaded
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub enum AudioCheck {
     /// Only audio a new episode's base filename collides with, which is
     /// where podpull 1.1.2 and earlier could leave damage; mismatches are
@@ -85,7 +64,6 @@ impl Default for SyncOptions {
 
 /// Result of a sync operation
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct SyncResult {
     /// Number of new episodes successfully downloaded
     pub downloaded: usize,
@@ -879,12 +857,12 @@ mod tests {
     }
 
     fn damage(remedy: DamageRemedy) -> DamagedAudio {
-        DamagedAudio::new(
-            "SFT Bits: Sega Nomad",
-            format!("{}.mp3", NOMAD_STEM),
-            DamageKind::Mismatch,
+        DamagedAudio {
+            episode_title: "SFT Bits: Sega Nomad".to_string(),
+            audio_filename: format!("{}.mp3", NOMAD_STEM),
+            kind: DamageKind::Mismatch,
             remedy,
-        )
+        }
     }
 
     fn missing(remedy: DamageRemedy) -> DamagedAudio {

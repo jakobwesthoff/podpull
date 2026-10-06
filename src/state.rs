@@ -135,7 +135,6 @@ impl OutputState {
 
 /// An episode metadata file whose content could not be parsed
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct UnreadableMetadata {
     pub path: PathBuf,
     /// Why the content could not be used
@@ -144,7 +143,6 @@ pub struct UnreadableMetadata {
 
 /// An episode downloaded by an earlier run, as its metadata records it
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct StoredEpisode {
     pub title: String,
     pub guid: Option<String>,
@@ -177,7 +175,6 @@ impl StoredEpisode {
 /// Audio and metadata share one stem, so a plan cannot pair the audio of
 /// one name with the metadata of another.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct PlannedDownload {
     pub episode: Episode,
     /// Name of both files inside the output directory, without extension
@@ -225,7 +222,6 @@ impl PlannedDownload {
 
 /// Plan for synchronization, indicating what needs to be downloaded
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct SyncPlan {
     /// Episodes to download in this run, newest first, within the limit
     pub to_download: Vec<PlannedDownload>,
@@ -251,7 +247,6 @@ pub struct SyncPlan {
 /// A stored episode whose audio is checked against its recorded hash,
 /// with the feed episode it belongs to
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct CheckTarget {
     pub stored: StoredEpisode,
     /// The feed episode the stored episode was matched to, if any

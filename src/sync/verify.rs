@@ -110,7 +110,7 @@ pub(super) async fn verify_stored_audio(
                 audio_filename,
                 remedy,
             },
-            _ => ProgressEvent::StoredAudioMismatch {
+            DamageKind::Mismatch => ProgressEvent::StoredAudioMismatch {
                 episode_title,
                 audio_filename,
                 remedy,
@@ -144,12 +144,12 @@ pub(super) async fn verify_stored_audio(
                     ..PlannedDownload::new(episode.clone(), stored.stem(), stored_extension)
                 })
             }
-            _ => verification.damaged.push(DamagedAudio::new(
-                stored.title.clone(),
-                stored.audio_filename.clone(),
+            _ => verification.damaged.push(DamagedAudio {
+                episode_title: stored.title.clone(),
+                audio_filename: stored.audio_filename.clone(),
                 kind,
                 remedy,
-            )),
+            }),
         }
     }
 

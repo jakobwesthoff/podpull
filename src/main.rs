@@ -353,9 +353,6 @@ impl ProgressReporter for IndicatifReporter {
                     completion_summary(&event)
                 );
             }
-
-            // Events added to the library after this reporter are not shown.
-            _ => {}
         }
     }
 }
@@ -483,7 +480,7 @@ fn damage_message(
     // Missing audio leaves only its metadata to delete.
     let (problem, files) = match kind {
         DamageKind::Missing => ("is missing", "its .json file"),
-        _ => (
+        DamageKind::Mismatch => (
             "does not match the hash recorded when it was downloaded",
             "it and its .json file",
         ),
@@ -503,9 +500,6 @@ fn damage_message(
             "the feed now offers another audio format, so delete {} to download it again",
             files
         ),
-        // A remedy added to the library after this message only lacks its
-        // explanation.
-        _ => "see the podpull documentation".to_string(),
     };
     format!(
         "Audio of \"{}\" ({}) {}; {}",
@@ -541,19 +535,19 @@ fn available_title_width(index_width: usize) -> usize {
 }
 
 fn sync_options(args: &Args) -> SyncOptions {
-    let mut options = SyncOptions::default();
-    options.limit = args.limit;
-    options.max_concurrent = args.concurrent;
-    options.continue_on_error = true;
-    // --repair includes everything --verify does.
-    options.audio_check = if args.repair {
-        AudioCheck::Repair
-    } else if args.verify {
-        AudioCheck::Verify
-    } else {
-        AudioCheck::Collisions
-    };
-    options
+    SyncOptions {
+        limit: args.limit,
+        max_concurrent: args.concurrent,
+        continue_on_error: true,
+        // --repair includes everything --verify does.
+        audio_check: if args.repair {
+            AudioCheck::Repair
+        } else if args.verify {
+            AudioCheck::Verify
+        } else {
+            AudioCheck::Collisions
+        },
+    }
 }
 
 #[tokio::main]
@@ -850,23 +844,22 @@ mod tests {
     }
 
     fn result(downloaded: usize, failed: usize, damaged: usize) -> SyncResult {
-        let mut result = SyncResult::default();
-        result.downloaded = downloaded;
-        result.failed = failed;
-        result.failed_episodes = (0..failed)
-            .map(|n| (format!("Episode {}", n), "HTTP error 404".to_string()))
-            .collect();
-        result.damaged = (0..damaged)
-            .map(|n| {
-                DamagedAudio::new(
-                    format!("Damaged {}", n),
-                    format!("2024-01-0{}-Damaged.mp3", n + 1),
-                    DamageKind::Mismatch,
-                    DamageRemedy::RepairAvailable,
-                )
-            })
-            .collect();
-        result
+        SyncResult {
+            downloaded,
+            failed,
+            failed_episodes: (0..failed)
+                .map(|n| (format!("Episode {}", n), "HTTP error 404".to_string()))
+                .collect(),
+            damaged: (0..damaged)
+                .map(|n| DamagedAudio {
+                    episode_title: format!("Damaged {}", n),
+                    audio_filename: format!("2024-01-0{}-Damaged.mp3", n + 1),
+                    kind: DamageKind::Mismatch,
+                    remedy: DamageRemedy::RepairAvailable,
+                })
+                .collect(),
+            ..Default::default()
+        }
     }
 
     #[test]

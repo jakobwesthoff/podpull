@@ -126,7 +126,7 @@ pub fn generate_unique_filename_stem(episode: &Episode, claimed_keys: &HashSet<S
 
     // Parsed feeds always carry a GUID, since parsing substitutes the raw
     // enclosure URL string for a missing one. The fallback to the parsed URL
-    // here serves episodes constructed by library users.
+    // here serves episodes built in code rather than parsed.
     let identity = episode
         .guid
         .as_deref()
