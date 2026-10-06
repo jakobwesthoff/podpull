@@ -111,6 +111,8 @@ pub enum ProgressEvent {
         /// New episodes not downloaded due to --limit
         limited_count: usize,
         failed_count: usize,
+        /// Episodes not started because a failure stopped the run
+        not_started_count: usize,
     },
 }
 
@@ -227,6 +229,7 @@ mod tests {
             existing_count: 5,
             limited_count: 2,
             failed_count: 1,
+            not_started_count: 0,
         });
     }
 }

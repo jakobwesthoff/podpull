@@ -294,6 +294,7 @@ impl ProgressReporter for IndicatifReporter {
                 existing_count,
                 limited_count,
                 failed_count,
+                not_started_count,
             } => {
                 self.main_bar.finish_and_clear();
 
@@ -304,6 +305,13 @@ impl ProgressReporter for IndicatifReporter {
 
                 if limited_count > 0 {
                     parts.push(format!("{} limited", limited_count.to_string().cyan()));
+                }
+
+                if not_started_count > 0 {
+                    parts.push(format!(
+                        "{} not started",
+                        not_started_count.to_string().yellow()
+                    ));
                 }
 
                 parts.push(if failed_count > 0 {

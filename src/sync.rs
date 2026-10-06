@@ -4,6 +4,9 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use url::Url;
 
 use crate::episode::{DownloadContext, download_episode, hash_file};
@@ -52,6 +55,9 @@ pub struct SyncResult {
     pub failed: usize,
     /// Details of failed episodes (title, error message)
     pub failed_episodes: Vec<(String, String)>,
+    /// Number of episodes not started because an earlier download failed
+    /// and `continue_on_error` is off
+    pub not_started: usize,
 }
 
 /// Synchronize a podcast feed to a local directory
@@ -126,22 +132,6 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     // Write podcast metadata
     write_podcast_metadata(&podcast, output_dir)?;
 
-    if to_download.is_empty() {
-        reporter.report(ProgressEvent::SyncCompleted {
-            downloaded_count: 0,
-            existing_count: existing,
-            limited_count: limited,
-            failed_count: 0,
-        });
-
-        return Ok(SyncResult {
-            downloaded: 0,
-            skipped: existing,
-            failed: 0,
-            failed_episodes: vec![],
-        });
-    }
-
     let totals = download_all(client, to_download, output_dir, &reporter, options).await;
     let downloaded = totals.downloaded;
     let mut failed_eps = verification.failures;
@@ -153,6 +143,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         existing_count: existing,
         limited_count: limited,
         failed_count: failed,
+        not_started_count: totals.not_started,
     });
 
     if downloaded == 0 && failed > 0 && !options.continue_on_error {
@@ -164,6 +155,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         skipped: existing,
         failed,
         failed_episodes: failed_eps,
+        not_started: totals.not_started,
     })
 }
 
@@ -207,6 +199,8 @@ struct DownloadTotals {
     downloaded: usize,
     /// Failed downloads as (episode title, error message) pairs
     failed_episodes: Vec<(String, String)>,
+    /// Episodes skipped because a failure stopped the run
+    not_started: usize,
 }
 
 /// Returns a download slot to the pool when the task holding it ends,
@@ -248,11 +242,20 @@ async fn download_all<C: HttpClient + Clone + 'static>(
     // reported under its episode.
     let mut tasks = Vec::new();
 
+    // Without continue_on_error, the first failure stops further downloads
+    // from starting; downloads already running finish.
+    let stop = Arc::new(AtomicBool::new(false));
+
     for (episode_index, planned) in to_download.into_iter().enumerate() {
         let download_id = slot_rx
             .recv()
             .await
             .expect("slot_tx stays alive in this function, so the channel never closes");
+        // A failing task raises the flag before it releases its slot, so the
+        // check after acquiring a slot sees every failure that freed it.
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         let slot = SlotGuard {
             pool: slot_tx.clone(),
             download_id,
@@ -262,6 +265,8 @@ async fn download_all<C: HttpClient + Clone + 'static>(
         let output_dir = output_dir.to_path_buf();
         let reporter = reporter.clone();
         let title = planned.episode.title.clone();
+        let stop = stop.clone();
+        let continue_on_error = options.continue_on_error;
 
         let task = tokio::spawn(async move {
             let _slot = slot;
@@ -293,6 +298,9 @@ async fn download_all<C: HttpClient + Clone + 'static>(
                 episode_title: episode.title.clone(),
                 error: error.clone(),
             });
+            if !continue_on_error {
+                stop.store(true, Ordering::SeqCst);
+            }
             DownloadOutcome::Failed { error }
         });
 
@@ -302,6 +310,7 @@ async fn download_all<C: HttpClient + Clone + 'static>(
     let mut totals = DownloadTotals {
         downloaded: 0,
         failed_episodes: Vec::new(),
+        not_started: total_to_download - tasks.len(),
     };
     for (title, task) in tasks {
         match task.await {
@@ -1238,5 +1247,57 @@ mod tests {
             .collect();
         titles.sort();
         assert_eq!(titles, vec!["Episode 1", "Episode 2"]);
+    }
+
+    #[tokio::test]
+    async fn sync_stops_starting_downloads_after_a_failure_without_continue_on_error() {
+        let dir = tempdir().unwrap();
+        let items = [
+            FeedItem {
+                title: "Newest",
+                pub_date: "Wed, 03 Jan 2024 12:00:00 GMT",
+                guid: "newest",
+            },
+            FeedItem {
+                title: "Middle",
+                pub_date: "Tue, 02 Jan 2024 12:00:00 GMT",
+                guid: "middle",
+            },
+            FeedItem {
+                title: "Oldest",
+                pub_date: "Mon, 01 Jan 2024 12:00:00 GMT",
+                guid: "oldest",
+            },
+        ];
+        // The directory scan cannot remove a directory, so it blocks the
+        // partial file of the middle episode.
+        std::fs::create_dir(dir.path().join("2024-01-02-Middle.mp3.partial")).unwrap();
+        let reporter = Arc::new(RecordingReporter::default());
+
+        let result = sync_podcast(
+            &client_for(&items),
+            "https://example.com/feed.xml",
+            dir.path(),
+            &SyncOptions {
+                max_concurrent: 1,
+                continue_on_error: false,
+                ..Default::default()
+            },
+            reporter.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.not_started, 1);
+        assert!(!dir.path().join("2024-01-01-Oldest.mp3").exists());
+        assert!(reporter.events().iter().any(|event| matches!(
+            event,
+            ProgressEvent::SyncCompleted {
+                not_started_count: 1,
+                ..
+            }
+        )));
     }
 }
