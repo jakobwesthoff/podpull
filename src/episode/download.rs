@@ -175,8 +175,10 @@ pub async fn stage_download<C: HttpClient>(
         });
     }
 
-    // Ensure all data is flushed to disk
-    file.flush()
+    // Without syncing, a power loss or a crashed file server could persist
+    // the later rename before the data and leave a truncated file under the
+    // final name.
+    file.sync_all()
         .await
         .map_err(|e| DownloadError::FileWriteFailed {
             path: partial_path.clone(),

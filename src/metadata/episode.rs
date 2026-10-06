@@ -2,11 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use super::{StagedMetadata, stage_metadata_file};
 use crate::error::MetadataError;
 use crate::feed::Episode;
 
@@ -56,44 +57,6 @@ impl EpisodeMetadata {
     }
 }
 
-/// Episode metadata written to its partial file but not yet under its
-/// final name
-///
-/// A metadata file cut short by an interruption would leave its episode
-/// without a readable GUID while still occupying the name. Writing to a
-/// partial file, which the next directory scan removes, and renaming it into
-/// place means the metadata file is either complete or untouched. Staging
-/// also lets a sync write the metadata before the audio takes its name.
-#[derive(Debug)]
-pub struct StagedMetadata {
-    partial_path: PathBuf,
-    path: PathBuf,
-}
-
-impl StagedMetadata {
-    /// Move the metadata from its partial file to its final name
-    ///
-    /// On failure the partial file is removed as well, as nothing can
-    /// complete it any more.
-    pub fn commit(self) -> Result<(), MetadataError> {
-        std::fs::rename(&self.partial_path, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&self.partial_path);
-            MetadataError::WriteFailed {
-                path: self.path.clone(),
-                source: e,
-            }
-        })
-    }
-
-    /// Abandon the metadata and remove its partial file
-    ///
-    /// A partial file that cannot be removed here is removed by the next
-    /// directory scan.
-    pub fn discard(self) {
-        let _ = std::fs::remove_file(&self.partial_path);
-    }
-}
-
 /// Write episode metadata into the partial file next to `path`
 pub fn stage_episode_metadata(
     episode: &Episode,
@@ -104,16 +67,7 @@ pub fn stage_episode_metadata(
     let metadata = EpisodeMetadata::from_episode(episode, audio_filename, content_hash);
     let json = serde_json::to_string_pretty(&metadata)?;
 
-    let partial_path = PathBuf::from(format!("{}.partial", path.display()));
-    std::fs::write(&partial_path, json).map_err(|e| MetadataError::WriteFailed {
-        path: partial_path.clone(),
-        source: e,
-    })?;
-
-    Ok(StagedMetadata {
-        partial_path,
-        path: path.to_path_buf(),
-    })
+    stage_metadata_file(path, json.as_bytes())
 }
 
 /// Write episode metadata to a JSON file, replacing an existing one atomically

@@ -7,6 +7,7 @@ use std::path::Path;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use super::stage_metadata_file;
 use crate::error::MetadataError;
 use crate::feed::Podcast;
 
@@ -49,7 +50,7 @@ pub fn write_podcast_metadata(podcast: &Podcast, output_dir: &Path) -> Result<()
     let path = output_dir.join(PODCAST_METADATA_FILENAME);
 
     let json = serde_json::to_string_pretty(&metadata)?;
-    std::fs::write(&path, json).map_err(|e| MetadataError::WriteFailed { path, source: e })
+    stage_metadata_file(&path, json.as_bytes())?.commit()
 }
 
 /// Read podcast metadata from the output directory
@@ -109,6 +110,23 @@ mod tests {
 
         assert_eq!(read_back.title, "Test Podcast");
         assert_eq!(read_back.description, Some("A test podcast".to_string()));
+    }
+
+    #[test]
+    fn failed_write_leaves_existing_podcast_metadata_intact() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("podcast.json");
+        let previous = r#"{"title":"Previous"}"#;
+        std::fs::write(&path, previous).unwrap();
+
+        // A directory in place of the partial file makes the write fail
+        // before the existing metadata could be touched.
+        std::fs::create_dir(dir.path().join("podcast.json.partial")).unwrap();
+
+        let result = write_podcast_metadata(&make_podcast(), dir.path());
+
+        assert!(matches!(result, Err(MetadataError::WriteFailed { .. })));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), previous);
     }
 
     #[test]
