@@ -28,8 +28,6 @@ pub struct SyncOptions {
     pub limit: Option<usize>,
     /// Maximum number of concurrent downloads; 0 counts as 1
     pub max_concurrent: usize,
-    /// Continue downloading if individual episodes fail
-    pub continue_on_error: bool,
     /// Which stored audio to check against its recorded hash, and whether
     /// to download mismatched episodes again
     pub audio_check: AudioCheck,
@@ -56,7 +54,6 @@ impl Default for SyncOptions {
         Self {
             limit: None,
             max_concurrent: 3,
-            continue_on_error: true,
             audio_check: AudioCheck::Collisions,
         }
     }
@@ -75,9 +72,6 @@ pub struct SyncResult {
     pub failed: usize,
     /// Details of failed episodes (title, error message)
     pub failed_episodes: Vec<(String, String)>,
-    /// Number of episodes not started because an earlier download failed
-    /// and `continue_on_error` is off
-    pub not_started: usize,
     /// Stored audio found damaged or missing and left as it is
     pub damaged: Vec<DamagedAudio>,
     /// Number of new episodes whose audio was already stored byte for byte,
@@ -192,17 +186,9 @@ pub async fn sync_podcast<C: HttpClient>(
         repaired_count: totals.repaired,
         limited_count: limited,
         failed_count: failed,
-        not_started_count: totals.not_started,
         damaged_count: verification.damaged.len(),
         adopted_count: totals.adopted,
     });
-
-    // Recording the GUID of audio already stored completes an episode as
-    // much as downloading it does.
-    let succeeded = downloaded + totals.repaired + totals.adopted;
-    if succeeded == 0 && failed > 0 && !options.continue_on_error {
-        return Err(SyncError::AllDownloadsFailed);
-    }
 
     Ok(SyncResult {
         downloaded,
@@ -210,7 +196,6 @@ pub async fn sync_podcast<C: HttpClient>(
         skipped: existing,
         failed,
         failed_episodes: failed_eps,
-        not_started: totals.not_started,
         damaged: verification.damaged,
         adopted: totals.adopted,
         stuck_partial_files: state.stuck_partial_files().to_vec(),
@@ -1105,26 +1090,6 @@ mod tests {
         assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
     }
 
-    #[tokio::test]
-    async fn sync_fails_when_every_download_fails_without_continue_on_error() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(format!("{}.mp3.partial", NOMAD_STEM))).unwrap();
-
-        let result = sync_podcast(
-            &client_for(&[NOMAD_ORIGINAL]),
-            "https://example.com/feed.xml",
-            dir.path(),
-            &SyncOptions {
-                continue_on_error: false,
-                ..Default::default()
-            },
-            NoopReporter::shared(),
-        )
-        .await;
-
-        assert!(matches!(result, Err(SyncError::AllDownloadsFailed)));
-    }
-
     // =========================================================
     // Opt-in repair of damaged audio
     // =========================================================
@@ -1365,58 +1330,6 @@ mod tests {
             .collect();
         titles.sort();
         assert_eq!(titles, vec!["Episode 1", "Episode 2"]);
-    }
-
-    #[tokio::test]
-    async fn sync_stops_starting_downloads_after_a_failure_without_continue_on_error() {
-        let dir = tempdir().unwrap();
-        let items = [
-            FeedItem {
-                title: "Newest",
-                pub_date: "Wed, 03 Jan 2024 12:00:00 GMT",
-                guid: "newest",
-            },
-            FeedItem {
-                title: "Middle",
-                pub_date: "Tue, 02 Jan 2024 12:00:00 GMT",
-                guid: "middle",
-            },
-            FeedItem {
-                title: "Oldest",
-                pub_date: "Mon, 01 Jan 2024 12:00:00 GMT",
-                guid: "oldest",
-            },
-        ];
-        // The directory scan cannot remove a directory, so it blocks the
-        // partial file of the middle episode.
-        std::fs::create_dir(dir.path().join("2024-01-02-Middle.mp3.partial")).unwrap();
-        let reporter = Arc::new(RecordingReporter::default());
-
-        let result = sync_podcast(
-            &client_for(&items),
-            "https://example.com/feed.xml",
-            dir.path(),
-            &SyncOptions {
-                max_concurrent: 1,
-                continue_on_error: false,
-                ..Default::default()
-            },
-            reporter.clone(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.downloaded, 1);
-        assert_eq!(result.failed, 1);
-        assert_eq!(result.not_started, 1);
-        assert!(!dir.path().join("2024-01-01-Oldest.mp3").exists());
-        assert!(reporter.events().iter().any(|event| matches!(
-            event,
-            ProgressEvent::SyncCompleted {
-                not_started_count: 1,
-                ..
-            }
-        )));
     }
 
     // =========================================================
@@ -1927,36 +1840,6 @@ mod tests {
             metadata.additional_guids,
             vec!["nomad-reissued".to_string()]
         );
-    }
-
-    #[tokio::test]
-    async fn sync_counts_recorded_guids_as_success_without_continue_on_error() {
-        let dir = tempdir().unwrap();
-        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
-        let other = FeedItem {
-            title: "Other",
-            pub_date: "Fri, 20 Dec 2024 08:00:00 GMT",
-            guid: "other",
-        };
-        // The scan cannot remove a directory in the way of the partial file,
-        // so the other episode fails.
-        std::fs::create_dir(dir.path().join("2024-12-20-Other.mp3.partial")).unwrap();
-
-        let result = sync_podcast(
-            &client_for(&[REISSUED, other]),
-            "https://example.com/feed.xml",
-            dir.path(),
-            &SyncOptions {
-                continue_on_error: false,
-                ..Default::default()
-            },
-            NoopReporter::shared(),
-        )
-        .await
-        .expect("recording the re-issued GUID is a success");
-
-        assert_eq!(result.adopted, 1);
-        assert_eq!(result.failed, 1);
     }
 
     /// A planned re-issue of NOMAD_ORIGINAL whose one candidate records

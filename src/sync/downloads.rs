@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::{FutureExt, StreamExt};
 
@@ -27,8 +26,6 @@ pub(super) enum DownloadOutcome {
     Failed {
         error: String,
     },
-    /// Skipped because an earlier failure stopped the run
-    NotStarted,
 }
 
 /// Results of all downloads of one sync run
@@ -37,8 +34,6 @@ pub(super) struct DownloadTotals {
     pub(super) repaired: usize,
     /// Failed downloads as (episode title, error message) pairs
     pub(super) failed_episodes: Vec<(String, String)>,
-    /// Episodes skipped because a failure stopped the run
-    pub(super) not_started: usize,
     /// Episodes whose audio was already stored byte for byte
     pub(super) adopted: usize,
 }
@@ -98,23 +93,12 @@ pub(super) async fn download_all<C: HttpClient>(
     let max_concurrent = options.max_concurrent.max(1);
     let free_slots = Mutex::new((0..max_concurrent).rev().collect::<Vec<_>>());
 
-    // Without continue_on_error, the first failure stops further downloads
-    // from starting; downloads already running finish. A download starts
-    // only once a running one has completed, so it sees every failure that
-    // made room for it.
-    let stop = AtomicBool::new(false);
-
     let outcomes: Vec<(String, DownloadOutcome)> =
         futures::stream::iter(to_download.into_iter().enumerate())
             .map(|(episode_index, planned)| {
                 let free_slots = &free_slots;
-                let stop = &stop;
                 async move {
                     let title = planned.episode.title.clone();
-                    if stop.load(Ordering::SeqCst) {
-                        return (title, DownloadOutcome::NotStarted);
-                    }
-
                     let slot = SlotGuard::take(free_slots);
                     let context = DownloadContext {
                         download_id: slot.download_id,
@@ -148,9 +132,6 @@ pub(super) async fn download_all<C: HttpClient>(
                             error: error.clone(),
                         })
                     }));
-                    if !options.continue_on_error {
-                        stop.store(true, Ordering::SeqCst);
-                    }
                     (title, DownloadOutcome::Failed { error })
                 }
             })
@@ -162,7 +143,6 @@ pub(super) async fn download_all<C: HttpClient>(
         downloaded: 0,
         repaired: 0,
         failed_episodes: Vec::new(),
-        not_started: 0,
         adopted: 0,
     };
     for (title, outcome) in outcomes {
@@ -171,7 +151,6 @@ pub(super) async fn download_all<C: HttpClient>(
             DownloadOutcome::Repaired => totals.repaired += 1,
             DownloadOutcome::AlreadyStored => totals.adopted += 1,
             DownloadOutcome::Failed { error } => totals.failed_episodes.push((title, error)),
-            DownloadOutcome::NotStarted => totals.not_started += 1,
         }
     }
     totals

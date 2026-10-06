@@ -366,7 +366,6 @@ fn completion_summary(event: &ProgressEvent) -> String {
         adopted_count,
         limited_count,
         failed_count,
-        not_started_count,
         damaged_count,
     } = *event
     else {
@@ -391,13 +390,6 @@ fn completion_summary(event: &ProgressEvent) -> String {
 
     if limited_count > 0 {
         parts.push(format!("{} limited", limited_count.to_string().cyan()));
-    }
-
-    if not_started_count > 0 {
-        parts.push(format!(
-            "{} not started",
-            not_started_count.to_string().yellow()
-        ));
     }
 
     parts.push(if failed_count > 0 {
@@ -538,7 +530,6 @@ fn sync_options(args: &Args) -> SyncOptions {
     SyncOptions {
         limit: args.limit,
         max_concurrent: args.concurrent,
-        continue_on_error: true,
         // --repair includes everything --verify does.
         audio_check: if args.repair {
             AudioCheck::Repair
@@ -895,7 +886,6 @@ mod tests {
             adopted_count: 1,
             limited_count: 0,
             failed_count: 0,
-            not_started_count: 0,
             damaged_count: 0,
         });
 
@@ -977,7 +967,6 @@ mod tests {
 
         assert_eq!(options.limit, Some(10));
         assert_eq!(options.max_concurrent, 5);
-        assert!(options.continue_on_error);
         assert_eq!(options.audio_check, AudioCheck::Repair);
     }
 

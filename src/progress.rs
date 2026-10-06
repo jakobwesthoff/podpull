@@ -149,8 +149,6 @@ pub enum ProgressEvent {
         /// New episodes not downloaded due to --limit
         limited_count: usize,
         failed_count: usize,
-        /// Episodes not started because a failure stopped the run
-        not_started_count: usize,
         /// Stored audio found damaged and left as it is
         damaged_count: usize,
         /// New episodes found already stored, whose GUID was recorded
@@ -292,7 +290,6 @@ mod tests {
             existing_count: 5,
             limited_count: 2,
             failed_count: 1,
-            not_started_count: 0,
             damaged_count: 0,
             adopted_count: 0,
             repaired_count: 0,
