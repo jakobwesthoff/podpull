@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New episodes no longer overwrite existing files whose names differ only in letter case or in Unicode normalization, such as names with umlauts listed by network shares mounted on macOS
 - New episodes no longer overwrite audio files that have no readable metadata. If such a file belongs to the episode being downloaded, the episode is stored a second time under a new name
 - An episode listed twice under the same GUID is downloaded once
+- An episode re-issued under a new GUID with byte-identical audio is no longer stored a second time; the new GUID is added to the stored episode's metadata
 - In feeds without GUIDs, an episode is no longer downloaded again when only an access token in its URL changed and title, publication time and file name stay the same
 - If an episode's metadata cannot be written, its freshly downloaded audio is removed again instead of being left without metadata, which made the next sync store the episode a second time
 - Quiet mode (`-q`) lists failed and damaged episodes on stderr instead of hiding them

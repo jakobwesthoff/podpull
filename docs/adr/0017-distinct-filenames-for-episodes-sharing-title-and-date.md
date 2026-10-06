@@ -32,7 +32,7 @@ Comparing names as plain strings is not enough to detect such a collision. A net
 3. the base stem followed by the first 8 hex digits of the SHA-256 of the GUID, for undated episodes or when the time is taken too;
 4. that hashed stem followed by a counter.
 
-**A changed GUID is a collision like any other.** When a feed re-issues an episode under a new GUID, the earlier files stay and the new copy is stored under a free name. One exception covers feeds without GUIDs, where the enclosure URL is the identity: an episode whose URL differs from a stored episode's only before the file name, with the same title and the same publication time to the second, counts as already downloaded.
+**A changed GUID is a collision like any other, unless the audio is identical.** When a feed re-issues an episode under a new GUID, the new download is compared with the stored audio by content hash. If a stored episode records the same hash and its file, hashed again, still holds those bytes, the download is discarded and the new GUID is added to that episode's `additional_guids`; the scan counts those GUIDs as downloaded. Otherwise the earlier files stay and the new copy is stored under a free name. One exception covers feeds without GUIDs, where the enclosure URL is the identity: an episode whose URL differs from a stored episode's only before the file name, with the same title and the same publication time to the second, counts as already downloaded without a download.
 
 **Downloads never share a partial file.** The audio `.partial` file is created exclusively; an existing one fails the download with a message to delete it. There is no existence check before the final rename, because on the smbfs share above such a check reports an existing file as missing. Distinct paths are guaranteed by the plan within one run. Two podpull runs on the same directory at once are not supported: each run's scan removes every `.partial` file, including those of the other run.
 
@@ -49,7 +49,8 @@ Comparing names as plain strings is not enough to detect such a collision. A net
 - Episodes sharing title and date are all kept, and repeated syncs no longer download them again.
 - Which episode of a colliding pair keeps the base name depends on download order: newest first within one run, otherwise whichever was downloaded first.
 - An audio file without readable metadata keeps its name. If it belongs to an episode still in the feed, that episode is stored a second time under a free name. An interruption between the audio rename and the metadata rename still leaves such a file.
-- A feed that re-issues its episodes under new GUIDs leads to a second copy of each re-issued episode.
+- A feed that re-issues its episodes under new GUIDs costs one download per episode; only episodes whose audio changed are stored a second time.
+- Two feed entries with byte-identical audio share one file, and only the first entry's title and description are stored.
 - `--verify` and `--repair` read the whole archive; on a network share that is a full transfer of every audio file.
 - `generate_filename` returns the base name only, which can collide, and is deprecated. Library users get collision-free names from the `to_download` entries of `SyncPlan`.
 - Code outside the crate builds `SyncOptions` and `SyncResult` from `Default`, uses constructors for `DamagedAudio` and `PlannedDownload`, and needs a catch-all arm when matching `ProgressEvent` or `DamageRemedy`.

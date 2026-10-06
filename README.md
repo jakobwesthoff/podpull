@@ -95,7 +95,7 @@ Episode metadata alongside each audio file:
 }
 ```
 
-Fields the feed does not provide are left out. The `content_hash` is a SHA-256 hash of the downloaded audio; `--verify` and `--repair` check the files against it.
+Fields the feed does not provide are left out. An episode whose audio the feed also lists under further GUIDs records them in an `additional_guids` list. The `content_hash` is a SHA-256 hash of the downloaded audio; `--verify` and `--repair` check the files against it.
 
 ### How It Works
 
@@ -121,7 +121,7 @@ podpull identifies episodes using their **GUID** (a unique identifier from the R
 > [!NOTE]
 > **When Re-downloads Might Happen**
 >
-> If a podcast host changes their feed URL structure without preserving GUIDs, episodes may be re-downloaded. This is uncommon but can happen during podcast platform migrations. The earlier files are kept; a re-downloaded episode whose title and date did not change is stored next to them with its publication time in the filename.
+> If a podcast host changes their feed URL structure without preserving GUIDs, episodes may be re-downloaded. This is uncommon but can happen during podcast platform migrations. If a re-downloaded episode's audio is byte for byte identical to an episode already stored, podpull keeps no copy: it adds the new GUID to the stored episode's metadata (`additional_guids`). Otherwise the earlier files are kept, and a re-downloaded episode whose title and date did not change is stored next to them with its publication time in the filename.
 >
 > A feed without GUIDs is an exception for one common case: private feeds that put an access token into their audio URLs. When only the token changed, an episode with the same title, the same publication time to the second, and the same file name at the end of its URL counts as already downloaded.
 
