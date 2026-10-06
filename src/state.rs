@@ -260,8 +260,13 @@ pub struct CheckTarget {
 
 /// Scan the output directory to detect existing downloads
 ///
-/// Reads all .json metadata files to extract GUIDs of already-downloaded episodes.
-/// Also cleans up any `.partial` files from interrupted downloads.
+/// Creates the directory if it does not exist. Removes `.partial` files left
+/// by interrupted downloads and records those it cannot remove. Every other
+/// file claims its stem, so no new download takes its name. Each episode
+/// metadata file becomes a [`StoredEpisode`], together with whether the
+/// directory lists its audio. A metadata file whose content is not valid
+/// metadata is recorded as unreadable. One that cannot be read from disk
+/// fails the scan.
 pub fn scan_output_dir(
     output_dir: &Path,
     reporter: &SharedProgressReporter,
@@ -437,12 +442,20 @@ pub fn scan_output_dir(
 
 /// Create a sync plan by comparing episodes against the output state
 ///
-/// Determines which episodes need to be downloaded based on:
-/// 1. GUID matching (if episode has a GUID that matches a downloaded one, skip)
-/// 2. If no GUID match, episode will be downloaded
+/// Episodes are sorted by publication date, newest first, with episodes
+/// without a date at the end in their feed order. A GUID listed twice keeps
+/// its newest listing.
 ///
-/// Episodes are sorted by publication date (newest first). Episodes without
-/// a publication date are placed at the end, preserving their relative order.
+/// An episode is already present when a stored episode records its GUID,
+/// as primary or additional GUID, or when it has no GUID and a stored
+/// episode without one matches its title, exact publication time and the
+/// file name of its enclosure URL. The plan remembers which stored episodes
+/// each present episode matched, for checking their audio.
+///
+/// The remaining episodes are downloaded, the newest `limit` of them if a
+/// limit is given. Each gets a file stem no file on disk or earlier download
+/// in the plan claims, and the stored episodes it may have replaced in the
+/// feed.
 pub fn create_sync_plan(
     mut episodes: Vec<Episode>,
     state: &OutputState,

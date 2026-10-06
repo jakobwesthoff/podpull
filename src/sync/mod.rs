@@ -118,11 +118,14 @@ pub struct SyncResult {
 /// Synchronize a podcast feed to a local directory
 ///
 /// This is the main entry point for the library. It:
-/// 1. Fetches and parses the feed
+/// 1. Fetches or reads the feed and parses it
 /// 2. Scans the output directory for existing downloads
 /// 3. Creates a sync plan
-/// 4. Downloads new episodes in parallel
-/// 5. Writes metadata files
+/// 4. Checks stored audio against its recorded hash, as
+///    [`SyncOptions::audio_check`] selects, and plans repairs
+/// 5. Writes the podcast metadata
+/// 6. Downloads repairs and new episodes concurrently, each with its
+///    metadata
 pub async fn sync_podcast<C: HttpClient>(
     client: &C,
     feed_source: &str,
