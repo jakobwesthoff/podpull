@@ -46,7 +46,12 @@ struct Args {
     output_dir: PathBuf,
 
     /// Maximum number of concurrent downloads
-    #[arg(short = 'c', long, default_value = "3")]
+    #[arg(
+        short = 'c',
+        long,
+        default_value = "3",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
     concurrent: usize,
 
     /// Maximum number of episodes to download
@@ -827,6 +832,11 @@ mod tests {
         let args =
             Args::try_parse_from(["podpull", "--verify", "--repair", "feed.xml", "out"]).unwrap();
         assert_eq!(sync_options(&args).audio_check, AudioCheck::Repair);
+    }
+
+    #[test]
+    fn concurrency_of_zero_is_rejected() {
+        assert!(Args::try_parse_from(["podpull", "-c", "0", "feed.xml", "out"]).is_err());
     }
 
     #[test]

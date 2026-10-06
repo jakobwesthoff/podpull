@@ -52,7 +52,7 @@ use crate::state::{
 pub struct SyncOptions {
     /// Maximum number of episodes to download (None = all)
     pub limit: Option<usize>,
-    /// Maximum number of concurrent downloads
+    /// Maximum number of concurrent downloads; 0 counts as 1
     pub max_concurrent: usize,
     /// Continue downloading if individual episodes fail
     pub continue_on_error: bool,
@@ -369,7 +369,11 @@ async fn download_all<C: HttpClient>(
     options: &SyncOptions,
 ) -> DownloadTotals {
     let total_to_download = to_download.len();
-    let free_slots = Mutex::new((0..options.max_concurrent).rev().collect::<Vec<_>>());
+    // A limit of zero would never start a download and wait forever; it
+    // means one at a time. Slots and the concurrency limit come from the
+    // same number, so a starting download always finds a free slot.
+    let max_concurrent = options.max_concurrent.max(1);
+    let free_slots = Mutex::new((0..max_concurrent).rev().collect::<Vec<_>>());
 
     // Without continue_on_error, the first failure stops further downloads
     // from starting; downloads already running finish. A download starts
@@ -405,23 +409,26 @@ async fn download_all<C: HttpClient>(
                         Ok(Ok(Placed::AlreadyStored)) => {
                             return (title, DownloadOutcome::AlreadyStored);
                         }
-                        Ok(Err(error)) => {
-                            reporter.report(ProgressEvent::DownloadFailed {
-                                download_id: slot.download_id,
-                                episode_title: title.clone(),
-                                error: error.clone(),
-                            });
-                            error
-                        }
+                        Ok(Err(error)) => error,
                         Err(panic) => format!("Download panicked: {}", panic_message(&*panic)),
                     };
+                    // Every started download ends with an event a reporter
+                    // can close its display for this slot on. The reporter
+                    // may be what failed, so a second panic is contained.
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        reporter.report(ProgressEvent::DownloadFailed {
+                            download_id: slot.download_id,
+                            episode_title: title.clone(),
+                            error: error.clone(),
+                        })
+                    }));
                     if !options.continue_on_error {
                         stop.store(true, Ordering::SeqCst);
                     }
                     (title, DownloadOutcome::Failed { error })
                 }
             })
-            .buffer_unordered(options.max_concurrent)
+            .buffer_unordered(max_concurrent)
             .collect()
             .await;
 
@@ -2196,5 +2203,75 @@ mod tests {
         assert_eq!(result.failed, 1);
         assert_eq!(result.adopted, 0);
         assert_eq!(audio_files(dir.path()), vec![format!("{}.mp3", NOMAD_STEM)]);
+    }
+
+    #[tokio::test]
+    async fn sync_downloads_with_a_concurrency_of_zero_as_one() {
+        let dir = tempdir().unwrap();
+        let client = MockHttpClient {
+            feed_xml: SAMPLE_FEED.to_string(),
+            audio_data: b"fake audio".to_vec(),
+        };
+        let options = SyncOptions {
+            max_concurrent: 0,
+            ..Default::default()
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sync_with(dir.path(), &client, &options),
+        )
+        .await
+        .expect("a concurrency of zero still downloads");
+
+        assert_eq!(result.downloaded, 2);
+    }
+
+    /// Records every event and panics once a download completes, as a
+    /// faulty reporter would
+    #[derive(Default)]
+    struct RecordingPanickingReporter {
+        events: std::sync::Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl ProgressReporter for RecordingPanickingReporter {
+        fn report(&self, event: ProgressEvent) {
+            let completed = matches!(event, ProgressEvent::DownloadCompleted { .. });
+            self.events.lock().unwrap().push(event);
+            if completed {
+                panic!("reporter failure");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_reports_panicking_downloads_as_failed() {
+        let dir = tempdir().unwrap();
+        let client = MockHttpClient {
+            feed_xml: SAMPLE_FEED.to_string(),
+            audio_data: b"fake audio".to_vec(),
+        };
+        let reporter = Arc::new(RecordingPanickingReporter::default());
+
+        sync_podcast(
+            &client,
+            "https://example.com/feed.xml",
+            dir.path(),
+            &SyncOptions::default(),
+            reporter.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Every started download ends with an event a reporter can close its
+        // progress display on.
+        let failed = reporter
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, ProgressEvent::DownloadFailed { .. }))
+            .count();
+        assert_eq!(failed, 2);
     }
 }
