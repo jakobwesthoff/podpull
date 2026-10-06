@@ -28,10 +28,9 @@ pub struct OutputState {
     unreadable_metadata: Vec<UnreadableMetadata>,
     claimed_keys: HashSet<String>,
     stored_episodes: HashMap<String, StoredEpisode>,
-    /// GUIDs recorded by `stored_episodes`, for fast lookup
-    downloaded_guids: HashSet<String>,
-    /// Claim key of a stored episode per recorded content hash
-    claim_keys_by_content_hash: HashMap<String, String>,
+    /// Claim keys of the stored episodes recording each GUID, as primary or
+    /// additional GUID, in audio filename order
+    claim_keys_by_guid: HashMap<String, Vec<String>>,
 }
 
 impl OutputState {
@@ -43,22 +42,18 @@ impl OutputState {
         claimed_keys: HashSet<String>,
         stored_episodes: HashMap<String, StoredEpisode>,
     ) -> Self {
-        let downloaded_guids = stored_episodes
-            .values()
-            .flat_map(|stored| stored.guid.iter().chain(&stored.additional_guids))
-            .cloned()
-            .collect();
-
-        // Copies of one audio share a hash; the first by audio filename
-        // stands for them, independent of the order the scan found them in.
+        // Before podpull 1.2.0, colliding downloads could leave several
+        // files recording one GUID, so a GUID maps to all of them. Filename
+        // order keeps the result independent of the order of the scan.
         let mut by_filename: Vec<_> = stored_episodes.iter().collect();
         by_filename.sort_by(|(_, a), (_, b)| a.audio_filename.cmp(&b.audio_filename));
-        let mut claim_keys_by_content_hash = HashMap::new();
+        let mut claim_keys_by_guid: HashMap<String, Vec<String>> = HashMap::new();
         for (claim_key, stored) in by_filename {
-            if let Some(hash) = &stored.content_hash {
-                claim_keys_by_content_hash
-                    .entry(hash.clone())
-                    .or_insert_with(|| claim_key.clone());
+            for guid in stored.guid.iter().chain(&stored.additional_guids) {
+                claim_keys_by_guid
+                    .entry(guid.clone())
+                    .or_default()
+                    .push(claim_key.clone());
             }
         }
 
@@ -69,8 +64,7 @@ impl OutputState {
             unreadable_metadata,
             claimed_keys,
             stored_episodes,
-            downloaded_guids,
-            claim_keys_by_content_hash,
+            claim_keys_by_guid,
         }
     }
 
@@ -109,7 +103,7 @@ impl OutputState {
 
     /// Whether readable metadata in the directory records this GUID
     pub fn is_downloaded(&self, guid: &str) -> bool {
-        self.downloaded_guids.contains(guid)
+        self.claim_keys_by_guid.contains_key(guid)
     }
 
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
@@ -123,11 +117,14 @@ impl OutputState {
         self.stored_episodes.get(claim_key)
     }
 
-    /// The stored episode whose metadata records this content hash
-    pub fn stored_episode_with_content_hash(&self, content_hash: &str) -> Option<&StoredEpisode> {
-        self.claim_keys_by_content_hash
-            .get(content_hash)
-            .and_then(|claim_key| self.stored_episodes.get(claim_key))
+    /// The stored episodes whose metadata records this GUID, as primary or
+    /// additional GUID, in audio filename order
+    pub fn stored_episodes_with_guid(&self, guid: &str) -> impl Iterator<Item = &StoredEpisode> {
+        self.claim_keys_by_guid
+            .get(guid)
+            .into_iter()
+            .flatten()
+            .filter_map(|claim_key| self.stored_episodes.get(claim_key))
     }
 
     /// All episodes with readable metadata
@@ -171,25 +168,6 @@ impl StoredEpisode {
             .strip_suffix(".json")
             .unwrap_or(&self.metadata_filename)
     }
-
-    /// Whether `episode` is this stored episode re-issued under a new GUID
-    ///
-    /// A feed entry that replaced this one makes all of its GUIDs disappear
-    /// from the feed. Title and exact publication time must stay the same,
-    /// so that another entry with the same audio, such as a rerun listed
-    /// after the original dropped out of a feed that keeps only its newest
-    /// episodes, is not taken for it.
-    pub fn is_replaced_by(&self, episode: &Episode, feed_guids: &HashSet<String>) -> bool {
-        let still_listed = self
-            .guid
-            .iter()
-            .chain(&self.additional_guids)
-            .any(|guid| feed_guids.contains(guid));
-        !still_listed
-            && self.title == episode.title
-            && self.pub_date.is_some()
-            && self.pub_date == episode.pub_date
-    }
 }
 
 /// An episode scheduled for download, with the files it is written to
@@ -206,6 +184,13 @@ pub struct PlannedDownload {
     /// Whether the download replaces audio of an episode already stored
     /// under these names, as a repair does
     pub replaces_existing: bool,
+    /// Stored episodes the feed entry may have replaced, in audio filename
+    /// order; downloaded audio identical to one of them is recorded there
+    /// instead of stored again
+    pub(crate) replaced_candidates: Vec<StoredEpisode>,
+    /// GUIDs besides the episode's own that its metadata keeps recording,
+    /// as a repair keeps those of the episode it replaces
+    pub(crate) kept_guids: Vec<String>,
 }
 
 impl PlannedDownload {
@@ -220,6 +205,8 @@ impl PlannedDownload {
             stem: stem.into(),
             audio_extension: audio_extension.into(),
             replaces_existing: false,
+            replaced_candidates: Vec::new(),
+            kept_guids: Vec::new(),
         }
     }
 
@@ -246,8 +233,6 @@ pub struct SyncPlan {
     pub total_episodes: usize,
     /// Number of episodes not yet downloaded, before the limit
     pub new_episodes: usize,
-    /// GUIDs of all episodes in the feed
-    pub feed_guids: HashSet<String>,
     /// Stored episodes whose base filename a download in this run would
     /// have taken, each listed once
     ///
@@ -256,6 +241,9 @@ pub struct SyncPlan {
     /// bytes of two episodes downloaded at once. Names with a time or hash
     /// suffix are written with exclusive partial files.
     pub collisions: Vec<CheckTarget>,
+    /// The present feed episode each stored episode was matched to, by the
+    /// claim key of the stored episode's stem
+    pub(crate) feed_episodes_by_stored: HashMap<String, Episode>,
 }
 
 /// A stored episode whose audio is checked against its recorded hash,
@@ -264,7 +252,7 @@ pub struct SyncPlan {
 #[non_exhaustive]
 pub struct CheckTarget {
     pub stored: StoredEpisode,
-    /// The feed's episode with the stored episode's GUID, if still listed
+    /// The feed episode the stored episode was matched to, if any
     pub feed_episode: Option<Episode>,
 }
 
@@ -465,24 +453,35 @@ pub fn create_sync_plan(
     });
 
     let total_episodes = episodes.len();
-    let feed_guids = episodes
+    let feed_guids: HashSet<String> = episodes
         .iter()
         .filter_map(|episode| episode.guid.clone())
         .collect();
     let mut to_download = Vec::new();
     let mut already_present = Vec::new();
 
+    // Each present episode is matched to the stored episodes it is, so that
+    // checking stored audio knows where to download it from again. A stored
+    // episode matched by several feed entries keeps the newest.
+    let mut feed_episodes_by_stored = HashMap::new();
     for episode in episodes {
-        let is_downloaded = episode
-            .guid
-            .as_ref()
-            .is_some_and(|guid| state.is_downloaded(guid))
-            || is_guidless_reissue(&episode, state);
+        let mut matched: Vec<&StoredEpisode> = match &episode.guid {
+            Some(guid) => state.stored_episodes_with_guid(guid).collect(),
+            None => Vec::new(),
+        };
+        if matched.is_empty() {
+            matched = guidless_reissue_of(&episode, state);
+        }
 
-        if is_downloaded {
-            already_present.push(episode);
-        } else {
+        if matched.is_empty() {
             to_download.push(episode);
+        } else {
+            for stored in matched {
+                feed_episodes_by_stored
+                    .entry(filename_claim_key(stored.stem()))
+                    .or_insert_with(|| episode.clone());
+            }
+            already_present.push(episode);
         }
     }
 
@@ -501,7 +500,7 @@ pub fn create_sync_plan(
                 .iter()
                 .any(|collision| collision.stored.metadata_filename == stored.metadata_filename)
         {
-            collisions.push(check_target(stored, &already_present));
+            collisions.push(check_target(stored, &feed_episodes_by_stored));
         }
     }
 
@@ -516,10 +515,8 @@ pub fn create_sync_plan(
             let stem = generate_unique_filename_stem(&episode, &claimed_keys);
             claimed_keys.insert(filename_claim_key(&stem));
             PlannedDownload {
-                replaces_existing: false,
-                audio_extension: get_audio_extension(&episode),
-                stem,
-                episode,
+                replaced_candidates: replaced_candidates(&episode, state, &feed_guids),
+                ..PlannedDownload::new(episode.clone(), stem, get_audio_extension(&episode))
             }
         })
         .collect();
@@ -529,37 +526,86 @@ pub fn create_sync_plan(
         already_present,
         total_episodes,
         new_episodes,
-        feed_guids,
         collisions,
+        feed_episodes_by_stored,
     }
 }
 
-/// Whether `episode` lacks a GUID and is already stored under an enclosure
-/// URL that differs only before its file name
+/// Stored episodes that `episode` may have replaced in the feed, in audio
+/// filename order
+///
+/// Only those with a recorded hash qualify, as identical audio is what
+/// confirms the replacement. The match records the episode's GUID, so an
+/// episode without one has nothing to record and no candidates.
+fn replaced_candidates(
+    episode: &Episode,
+    state: &OutputState,
+    feed_guids: &HashSet<String>,
+) -> Vec<StoredEpisode> {
+    if episode.guid.is_none() {
+        return Vec::new();
+    }
+    let mut candidates: Vec<_> = state
+        .stored_episodes()
+        .filter(|stored| {
+            stored.content_hash.is_some() && is_replaced_by(stored, episode, feed_guids)
+        })
+        .cloned()
+        .collect();
+    candidates.sort_by(|a, b| a.audio_filename.cmp(&b.audio_filename));
+    candidates
+}
+
+/// Whether `episode` is `stored` re-issued under a new GUID
+///
+/// A feed entry that replaced the stored one makes all of its GUIDs
+/// disappear from the feed. Title and exact publication time must stay the
+/// same, so that another entry with the same audio, such as a rerun listed
+/// after the original dropped out of a feed that keeps only its newest
+/// episodes, is not taken for it.
+fn is_replaced_by(stored: &StoredEpisode, episode: &Episode, feed_guids: &HashSet<String>) -> bool {
+    let still_listed = stored
+        .guid
+        .iter()
+        .chain(&stored.additional_guids)
+        .any(|guid| feed_guids.contains(guid));
+    !still_listed
+        && stored.title == episode.title
+        && stored.pub_date.is_some()
+        && stored.pub_date == episode.pub_date
+}
+
+/// The stored episodes that `episode` is, if it lacks a GUID and is stored
+/// under an enclosure URL that differs only before its file name
 ///
 /// Without a GUID the enclosure URL identifies an episode, and private feeds
 /// put an access token into that URL. Every new token would otherwise make
 /// the whole archive count as new and store it a second time. The match
 /// requires title, exact publication time and the URL's file name to agree,
 /// because a wrong match skips a distinct episode.
-fn is_guidless_reissue(episode: &Episode, state: &OutputState) -> bool {
+fn guidless_reissue_of<'a>(episode: &Episode, state: &'a OutputState) -> Vec<&'a StoredEpisode> {
     let url = &episode.enclosure.url;
     if !identity_is_url(episode.guid.as_deref(), url) {
-        return false;
+        return Vec::new();
     }
     let (Some(pub_date), Some(file_name)) = (episode.pub_date, url_file_name(url)) else {
-        return false;
+        return Vec::new();
     };
 
-    state.stored_episodes().any(|stored| {
-        let Ok(stored_url) = Url::parse(&stored.original_url) else {
-            return false;
-        };
-        stored.title == episode.title
-            && stored.pub_date == Some(pub_date)
-            && identity_is_url(stored.guid.as_deref(), &stored_url)
-            && url_file_name(&stored_url) == Some(file_name)
-    })
+    let mut matched: Vec<_> = state
+        .stored_episodes()
+        .filter(|stored| {
+            let Ok(stored_url) = Url::parse(&stored.original_url) else {
+                return false;
+            };
+            stored.title == episode.title
+                && stored.pub_date == Some(pub_date)
+                && identity_is_url(stored.guid.as_deref(), &stored_url)
+                && url_file_name(&stored_url) == Some(file_name)
+        })
+        .collect();
+    matched.sort_by(|a, b| a.audio_filename.cmp(&b.audio_filename));
+    matched
 }
 
 /// Whether a GUID is the enclosure URL, as parsing makes it for an item
@@ -580,21 +626,25 @@ fn url_file_name(url: &Url) -> Option<&str> {
 
 /// Every stored episode, as targets for checking the whole archive
 ///
-/// Ordered by audio filename, so a check runs in the same order each time.
-pub fn archive_check_targets(state: &OutputState, plan: &SyncPlan) -> Vec<CheckTarget> {
+/// Stored episodes no present feed episode matched are targets as well,
+/// without a feed episode. Ordered by audio filename, so a check runs in the
+/// same order each time.
+pub(crate) fn archive_check_targets(state: &OutputState, plan: &SyncPlan) -> Vec<CheckTarget> {
     let mut targets: Vec<_> = state
         .stored_episodes()
-        .map(|stored| check_target(stored, &plan.already_present))
+        .map(|stored| check_target(stored, &plan.feed_episodes_by_stored))
         .collect();
     targets.sort_by(|a, b| a.stored.audio_filename.cmp(&b.stored.audio_filename));
     targets
 }
 
-/// Pair a stored episode with the present feed episode of the same GUID
-fn check_target(stored: &StoredEpisode, present: &[Episode]) -> CheckTarget {
-    let feed_episode = present
-        .iter()
-        .find(|episode| episode.guid.is_some() && episode.guid == stored.guid)
+/// Pair a stored episode with the present feed episode the plan matched it to
+fn check_target(
+    stored: &StoredEpisode,
+    feed_episodes_by_stored: &HashMap<String, Episode>,
+) -> CheckTarget {
+    let feed_episode = feed_episodes_by_stored
+        .get(&filename_claim_key(stored.stem()))
         .cloned();
     CheckTarget {
         stored: stored.clone(),
@@ -958,29 +1008,27 @@ mod tests {
     }
 
     #[test]
-    fn state_finds_stored_episode_by_content_hash() {
-        let with_hash = |stem: &str, guid: &str| StoredEpisode {
-            content_hash: Some("sha256:same".to_string()),
-            ..stored(stem, "Episode", guid)
+    fn state_finds_every_stored_episode_recording_a_guid() {
+        let adopted = StoredEpisode {
+            additional_guids: vec!["guid-shared".to_string()],
+            ..stored("2024-01-01-Adopted", "Episode", "guid-adopted")
         };
+        // Before podpull 1.2.0, colliding downloads could leave two files
+        // recording one GUID.
         let state = state_with_stored(vec![
-            with_hash("2024-01-02-Copy", "guid-copy"),
-            with_hash("2024-01-01-Original", "guid-original"),
+            adopted,
+            stored("2024-01-02-Copy", "Episode", "guid-shared"),
+            stored("2024-01-03-Other", "Other", "guid-other"),
         ]);
 
-        // With several copies of the same audio, the first by name answers,
-        // so the result does not depend on the order of the scan.
-        assert_eq!(
-            state
-                .stored_episode_with_content_hash("sha256:same")
-                .map(|stored| stored.audio_filename.as_str()),
-            Some("2024-01-01-Original.mp3")
-        );
-        assert!(
-            state
-                .stored_episode_with_content_hash("sha256:other")
-                .is_none()
-        );
+        let mut found: Vec<_> = state
+            .stored_episodes_with_guid("guid-shared")
+            .map(|stored| stored.audio_filename.as_str())
+            .collect();
+        found.sort();
+
+        assert_eq!(found, vec!["2024-01-01-Adopted.mp3", "2024-01-02-Copy.mp3"]);
+        assert_eq!(state.stored_episodes_with_guid("guid-gone").count(), 0);
     }
 
     #[test]
@@ -1302,6 +1350,144 @@ mod tests {
         );
     }
 
+    /// Audio filename and feed episode title of every archive check target
+    fn archive_pairs(state: &OutputState, plan: &SyncPlan) -> Vec<(String, Option<String>)> {
+        archive_check_targets(state, plan)
+            .into_iter()
+            .map(|target| {
+                (
+                    target.stored.audio_filename,
+                    target.feed_episode.map(|episode| episode.title),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn archive_check_targets_pair_episode_listed_under_an_additional_guid() {
+        let adopted = StoredEpisode {
+            additional_guids: vec!["guid-new".to_string()],
+            ..stored("2024-01-01-A", "A", "guid-old")
+        };
+        let state = state_with_stored(vec![adopted]);
+        let present = make_episode_with_date("A", Some("guid-new"), Some(make_date(2024, 1, 1)));
+        let plan = create_sync_plan(vec![present], &state, None);
+
+        assert_eq!(
+            archive_pairs(&state, &plan),
+            vec![("2024-01-01-A.mp3".to_string(), Some("A".to_string()))]
+        );
+    }
+
+    #[test]
+    fn archive_check_targets_pair_every_stored_copy_of_a_guid() {
+        let state = state_with_stored(vec![
+            stored("2024-01-01-A", "A", "guid-a"),
+            stored("2024-01-01-A Copy", "A", "guid-a"),
+        ]);
+        let present = make_episode_with_date("A", Some("guid-a"), Some(make_date(2024, 1, 1)));
+        let plan = create_sync_plan(vec![present], &state, None);
+
+        assert_eq!(
+            archive_pairs(&state, &plan),
+            vec![
+                ("2024-01-01-A Copy.mp3".to_string(), Some("A".to_string())),
+                ("2024-01-01-A.mp3".to_string(), Some("A".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn archive_check_targets_pair_guidless_episode_after_url_token_change() {
+        let state = state_with_stored(vec![stored_guidless(
+            TOKEN_A_URL,
+            "Sega Nomad",
+            EPISODE_TIME,
+        )]);
+        let plan = create_sync_plan(
+            vec![guidless(TOKEN_B_URL, "Sega Nomad", EPISODE_TIME)],
+            &state,
+            None,
+        );
+
+        let targets = archive_check_targets(&state, &plan);
+
+        assert_eq!(
+            targets[0]
+                .feed_episode
+                .as_ref()
+                .map(|episode| episode.enclosure.url.as_str()),
+            Some(TOKEN_B_URL)
+        );
+    }
+
+    #[test]
+    fn sync_plan_pairs_colliding_stored_episode_listed_under_an_additional_guid() {
+        let adopted = StoredEpisode {
+            additional_guids: vec!["guid-stored-new".to_string()],
+            ..stored("2024-12-19-Sega Nomad", "Sega Nomad", "guid-stored-old")
+        };
+        let state = state_with_stored(vec![adopted]);
+        let present = sega_nomad("guid-stored-new", "Thu, 19 Dec 2024 11:00:00 +0000");
+        let newer = sega_nomad("guid-newer", "Thu, 19 Dec 2024 10:45:35 +0000");
+
+        let plan = create_sync_plan(vec![present, newer], &state, None);
+
+        assert_eq!(
+            plan.collisions[0]
+                .feed_episode
+                .as_ref()
+                .and_then(|episode| episode.guid.as_deref()),
+            Some("guid-stored-new")
+        );
+    }
+
+    #[test]
+    fn sync_plan_lists_stored_episodes_a_download_may_have_replaced() {
+        let with_time = |stem: &str, title: &str, guid: &str| StoredEpisode {
+            pub_date: make_time(EPISODE_TIME),
+            content_hash: Some("sha256:nomad".to_string()),
+            ..stored(stem, title, guid)
+        };
+        let state = state_with_stored(vec![
+            with_time("2024-12-19-Sega Nomad", "Sega Nomad", "guid-gone"),
+            with_time("2024-12-19-Sega Nomad Copy", "Sega Nomad", "guid-gone"),
+            with_time("2024-12-19-Sega Nomad Listed", "Sega Nomad", "guid-listed"),
+            with_time("2024-12-19-Best of", "Best of", "guid-gone-too"),
+        ]);
+        let unhashed = StoredEpisode {
+            content_hash: None,
+            ..with_time("2024-12-19-Sega Nomad Unhashed", "Sega Nomad", "guid-gone")
+        };
+        let state = state_with_stored(
+            state
+                .stored_episodes()
+                .cloned()
+                .chain(std::iter::once(unhashed))
+                .collect(),
+        );
+        let reissued = sega_nomad("guid-new", EPISODE_TIME);
+        let listed = sega_nomad("guid-listed", EPISODE_TIME);
+
+        let plan = create_sync_plan(vec![reissued, listed], &state, None);
+
+        // Only stored episodes that left the feed with title and time
+        // unchanged and recorded a hash qualify, every copy of them in name
+        // order.
+        let candidates: Vec<_> = plan.to_download[0]
+            .replaced_candidates
+            .iter()
+            .map(|stored| stored.audio_filename.as_str())
+            .collect();
+        assert_eq!(
+            candidates,
+            vec![
+                "2024-12-19-Sega Nomad Copy.mp3",
+                "2024-12-19-Sega Nomad.mp3"
+            ]
+        );
+    }
+
     #[test]
     fn sync_plan_skips_guidless_episode_whose_url_token_changed() {
         let plan = plan_for_rotated_token(
@@ -1403,7 +1589,11 @@ mod tests {
         let reissued =
             make_episode_with_date("Sega Nomad", Some("new-guid"), make_time(EPISODE_TIME));
 
-        assert!(stored_nomad().is_replaced_by(&reissued, &feed_guids(&["new-guid"])));
+        assert!(is_replaced_by(
+            &stored_nomad(),
+            &reissued,
+            &feed_guids(&["new-guid"])
+        ));
     }
 
     #[test]
@@ -1411,7 +1601,11 @@ mod tests {
         let reissued =
             make_episode_with_date("Sega Nomad", Some("new-guid"), make_time(EPISODE_TIME));
 
-        assert!(!stored_nomad().is_replaced_by(&reissued, &feed_guids(&["new-guid", "old-guid"])));
+        assert!(!is_replaced_by(
+            &stored_nomad(),
+            &reissued,
+            &feed_guids(&["new-guid", "old-guid"])
+        ));
     }
 
     #[test]
@@ -1423,7 +1617,11 @@ mod tests {
         let reissued =
             make_episode_with_date("Sega Nomad", Some("new-guid"), make_time(EPISODE_TIME));
 
-        assert!(!stored.is_replaced_by(&reissued, &feed_guids(&["new-guid", "alias-guid"])));
+        assert!(!is_replaced_by(
+            &stored,
+            &reissued,
+            &feed_guids(&["new-guid", "alias-guid"])
+        ));
     }
 
     #[test]
@@ -1436,8 +1634,8 @@ mod tests {
         );
         let guids = feed_guids(&["new-guid"]);
 
-        assert!(!stored_nomad().is_replaced_by(&retitled, &guids));
-        assert!(!stored_nomad().is_replaced_by(&moved, &guids));
+        assert!(!is_replaced_by(&stored_nomad(), &retitled, &guids));
+        assert!(!is_replaced_by(&stored_nomad(), &moved, &guids));
     }
 
     #[test]
@@ -1448,7 +1646,11 @@ mod tests {
         };
         let undated = make_episode_with_date("Sega Nomad", Some("new-guid"), None);
 
-        assert!(!stored.is_replaced_by(&undated, &feed_guids(&["new-guid"])));
+        assert!(!is_replaced_by(
+            &stored,
+            &undated,
+            &feed_guids(&["new-guid"])
+        ));
     }
 
     #[test]

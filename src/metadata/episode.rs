@@ -80,6 +80,12 @@ impl EpisodeMetadata {
             content_hash,
         }
     }
+
+    /// Write this metadata into the partial file next to `path`
+    pub fn stage(&self, path: &Path) -> Result<StagedMetadata, MetadataError> {
+        let json = serde_json::to_string_pretty(self)?;
+        stage_metadata_file(path, json.as_bytes())
+    }
 }
 
 /// Write episode metadata into the partial file next to `path`
@@ -89,10 +95,7 @@ pub fn stage_episode_metadata(
     content_hash: Option<String>,
     path: &Path,
 ) -> Result<StagedMetadata, MetadataError> {
-    let metadata = EpisodeMetadata::from_episode(episode, audio_filename, content_hash);
-    let json = serde_json::to_string_pretty(&metadata)?;
-
-    stage_metadata_file(path, json.as_bytes())
+    EpisodeMetadata::from_episode(episode, audio_filename, content_hash).stage(path)
 }
 
 /// Write episode metadata to a JSON file, replacing an existing one atomically

@@ -20,9 +20,7 @@ use crate::feed::{
     Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
 };
 use crate::http::HttpClient;
-use crate::metadata::{
-    add_guid_to_episode_metadata, stage_episode_metadata, write_podcast_metadata,
-};
+use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 use crate::state::{
     CheckTarget, OutputState, PlannedDownload, StoredEpisode, archive_check_targets,
@@ -232,15 +230,7 @@ pub async fn sync_podcast<C: HttpClient>(
     // Write podcast metadata
     write_podcast_metadata(&podcast, output_dir)?;
 
-    let totals = download_all(
-        client,
-        to_download,
-        &state,
-        &plan.feed_guids,
-        &reporter,
-        options,
-    )
-    .await;
+    let totals = download_all(client, to_download, &state, &reporter, options).await;
     let downloaded = totals.downloaded;
     let failed_eps = totals.failed_episodes;
     let failed = failed_eps.len();
@@ -366,7 +356,6 @@ async fn download_all<C: HttpClient>(
     client: &C,
     to_download: Vec<PlannedDownload>,
     state: &OutputState,
-    feed_guids: &HashSet<String>,
     reporter: &SharedProgressReporter,
     options: &SyncOptions,
 ) -> DownloadTotals {
@@ -401,7 +390,7 @@ async fn download_all<C: HttpClient>(
                         total_to_download,
                     };
                     let attempt = AssertUnwindSafe(download_planned(
-                        client, &planned, state, feed_guids, &context, reporter,
+                        client, &planned, state, &context, reporter,
                     ))
                     .catch_unwind()
                     .await;
@@ -471,7 +460,6 @@ async fn download_planned<C: HttpClient>(
     client: &C,
     planned: &PlannedDownload,
     state: &OutputState,
-    feed_guids: &HashSet<String>,
     context: &DownloadContext,
     reporter: &SharedProgressReporter,
 ) -> Result<Placed, String> {
@@ -487,13 +475,11 @@ async fn download_planned<C: HttpClient>(
 
     // An entry re-issued under a new GUID with audio stored byte for byte
     // adds that GUID to the stored episode instead of a copy. Every other
-    // entry is an episode of its own, even with the same audio. A repair is
-    // excluded: it is meant to replace its file.
-    if !planned.replaces_existing
-        && let Some(guid) = &episode.guid
-        && let Some(stored) = state.stored_episode_with_content_hash(staged_audio.content_hash())
-        && stored.is_replaced_by(episode, feed_guids)
-        && stored_audio_still_matches(output_dir, stored, staged_audio.content_hash()).await
+    // entry is an episode of its own, even with the same audio. The plan
+    // names no candidates for a repair, which is meant to replace its file.
+    if let Some(guid) = &episode.guid
+        && let Some(stored) =
+            replaced_with_identical_audio(output_dir, planned, staged_audio.content_hash()).await
     {
         staged_audio.discard().await;
         let stored_metadata_path = output_dir.join(&stored.metadata_filename);
@@ -510,18 +496,13 @@ async fn download_planned<C: HttpClient>(
     }
 
     let staged_metadata = {
-        let episode = episode.clone();
-        let audio_filename = audio_filename.clone();
-        let content_hash = staged_audio.content_hash().to_string();
-        blocking(move || {
-            stage_episode_metadata(
-                &episode,
-                &audio_filename,
-                Some(content_hash),
-                &metadata_path,
-            )
-        })
-        .await?
+        let mut metadata = EpisodeMetadata::from_episode(
+            episode,
+            &audio_filename,
+            Some(staged_audio.content_hash().to_string()),
+        );
+        metadata.additional_guids = planned.kept_guids.clone();
+        blocking(move || metadata.stage(&metadata_path)).await?
     };
     let staged_metadata = match staged_metadata {
         Ok(staged_metadata) => staged_metadata,
@@ -622,6 +603,23 @@ enum Placed {
     Downloaded,
     /// Identical to stored audio, which now also carries the episode's GUID
     AlreadyStored,
+}
+
+/// The first stored episode the planned download may have replaced whose
+/// audio is identical to the download's
+async fn replaced_with_identical_audio<'a>(
+    output_dir: &Path,
+    planned: &'a PlannedDownload,
+    content_hash: &str,
+) -> Option<&'a StoredEpisode> {
+    for stored in &planned.replaced_candidates {
+        if stored.content_hash.as_deref() == Some(content_hash)
+            && stored_audio_still_matches(output_dir, stored, content_hash).await
+        {
+            return Some(stored);
+        }
+    }
+    None
 }
 
 /// Whether the stored audio still holds the bytes its metadata recorded
@@ -733,13 +731,21 @@ async fn verify_stored_audio(
 
         match (&target.feed_episode, remedy) {
             (Some(episode), DamageRemedy::Repairing) => {
+                // The repaired episode stays the one all of its GUIDs named,
+                // such as a GUID the feed listed it under before.
+                let kept_guids = stored
+                    .guid
+                    .iter()
+                    .chain(&stored.additional_guids)
+                    .filter(|guid| episode.guid.as_ref() != Some(*guid))
+                    .cloned()
+                    .collect();
                 verification.repairs.push(PlannedDownload {
-                    episode: episode.clone(),
-                    stem: stored.stem().to_string(),
+                    replaces_existing: true,
+                    kept_guids,
                     // The stored spelling keeps the download on the very
                     // file it replaces.
-                    audio_extension: stored_extension,
-                    replaces_existing: true,
+                    ..PlannedDownload::new(episode.clone(), stored.stem(), stored_extension)
                 })
             }
             _ => verification.damaged.push(DamagedAudio {
@@ -1610,6 +1616,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(metadata.guid.as_deref(), Some("nomad-reupload"));
+        assert!(metadata.additional_guids.is_empty());
         assert_eq!(metadata.content_hash, hash_file(&audio).ok());
         assert_eq!(
             mismatch_events(&events),
@@ -1874,7 +1881,6 @@ mod tests {
             &client_for(&[NOMAD_ORIGINAL]),
             planned,
             &OutputState::empty(dir),
-            &HashSet::new(),
             &context,
             &NoopReporter::shared(),
         )
@@ -2266,6 +2272,93 @@ mod tests {
         assert_eq!(result.failed, 1);
         assert_eq!(result.adopted, 0);
         assert_eq!(audio_files(dir.path()), vec![format!("{}.mp3", NOMAD_STEM)]);
+    }
+
+    #[tokio::test]
+    async fn sync_repairs_audio_of_an_adopted_episode_and_keeps_its_guids() {
+        let dir = tempdir().unwrap();
+        let audio = dir.path().join(format!("{}.mp3", NOMAD_STEM));
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        sync_recording(dir.path(), &[REISSUED]).await;
+        std::fs::write(&audio, b"damaged").unwrap();
+
+        let (result, _) = sync_checking(dir.path(), &[REISSUED], AudioCheck::Repair).await;
+
+        assert!(result.damaged.is_empty());
+        assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
+        // The repaired episode is still the one both GUIDs named.
+        let metadata = crate::metadata::read_episode_metadata(
+            &dir.path().join(format!("{}.json", NOMAD_STEM)),
+        )
+        .unwrap();
+        assert_eq!(metadata.guid.as_deref(), Some("nomad-reissued"));
+        assert_eq!(
+            metadata.additional_guids,
+            vec!["nomad-original".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_repairs_audio_of_a_guidless_episode_after_url_token_change() {
+        let dir = tempdir().unwrap();
+        let feed = |token: &str| {
+            format!(
+                r#"<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Podcast</title>
+    <description>A test podcast</description>
+    <item>
+      <title>Members Only</title>
+      <pubDate>Thu, 19 Dec 2024 10:25:22 GMT</pubDate>
+      <enclosure url="https://example.com/media/{}/episode-uuid.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>"#,
+                token
+            )
+        };
+        let client = |token: &str| MockHttpClient {
+            feed_xml: feed(token),
+            audio_data: b"fake audio".to_vec(),
+        };
+        sync_with(dir.path(), &client("token-a"), &SyncOptions::default()).await;
+        let audio = dir.path().join(audio_files(dir.path()).remove(0));
+        std::fs::write(&audio, b"damaged").unwrap();
+        let options = SyncOptions {
+            audio_check: AudioCheck::Repair,
+            ..Default::default()
+        };
+
+        let result = sync_with(dir.path(), &client("token-b"), &options).await;
+
+        assert!(result.damaged.is_empty());
+        assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
+        assert_eq!(audio_files(dir.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_adopts_any_stored_copy_that_still_holds_the_audio() {
+        let dir = tempdir().unwrap();
+        // Two copies of one episode with the same recorded hash. The copy
+        // first by name has changed on disk since.
+        let copy_stem = format!("{} Copy", NOMAD_STEM);
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        store_episode(dir.path(), &copy_stem, &NOMAD_ORIGINAL, b"fake audio");
+        std::fs::write(dir.path().join(format!("{}.mp3", copy_stem)), b"damaged").unwrap();
+
+        let (result, _) = sync_recording(dir.path(), &[REISSUED]).await;
+
+        assert_eq!(result.adopted, 1);
+        assert_eq!(result.downloaded, 0);
+        let metadata = crate::metadata::read_episode_metadata(
+            &dir.path().join(format!("{}.json", NOMAD_STEM)),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.additional_guids,
+            vec!["nomad-reissued".to_string()]
+        );
     }
 
     #[tokio::test]
