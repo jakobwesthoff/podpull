@@ -91,6 +91,9 @@ pub enum ProgressEvent {
     /// Partial files were cleaned up during directory scan
     PartialFilesCleanedUp { count: usize },
 
+    /// A partial file left by an interrupted download could not be removed
+    PartialFileStuck { path: PathBuf },
+
     /// An episode metadata file in the output directory could not be read
     MetadataUnreadable { path: PathBuf },
 
@@ -213,6 +216,10 @@ mod tests {
         });
 
         reporter.report(ProgressEvent::PartialFilesCleanedUp { count: 2 });
+
+        reporter.report(ProgressEvent::PartialFileStuck {
+            path: PathBuf::from("/podcasts/2024-01-15-Episode.mp3.partial"),
+        });
 
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),

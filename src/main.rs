@@ -268,6 +268,13 @@ impl ProgressReporter for IndicatifReporter {
                 }
             }
 
+            ProgressEvent::PartialFileStuck { path } => {
+                let _ = self.multi.println(format!(
+                    "{WARNING}{}",
+                    stuck_partial_file_message(&path).yellow()
+                ));
+            }
+
             ProgressEvent::MetadataUnreadable { path } => {
                 // Printed above the progress bars so the warning outlives
                 // the transient status line.
@@ -328,6 +335,13 @@ impl ProgressReporter for IndicatifReporter {
             }
         }
     }
+}
+
+fn stuck_partial_file_message(path: &Path) -> String {
+    format!(
+        "Could not remove the leftover partial file {}; its episode cannot be downloaded until it is deleted",
+        path.display()
+    )
 }
 
 fn unreadable_metadata_message(path: &Path) -> String {
@@ -443,6 +457,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stuck_partial_file_message_names_the_file() {
+        assert_eq!(
+            stuck_partial_file_message(Path::new("/podcasts/2024-01-15-Episode.mp3.partial")),
+            "Could not remove the leftover partial file /podcasts/2024-01-15-Episode.mp3.partial; \
+             its episode cannot be downloaded until it is deleted"
+        );
+    }
+
+    #[test]
     fn unreadable_metadata_message_names_the_file() {
         assert_eq!(
             unreadable_metadata_message(Path::new("/podcasts/2024-01-15-Episode.json")),
@@ -454,6 +477,9 @@ mod tests {
     fn reporter_prints_collision_warnings() {
         let reporter = IndicatifReporter::new();
 
+        reporter.report(ProgressEvent::PartialFileStuck {
+            path: PathBuf::from("/podcasts/2024-01-15-Episode.mp3.partial"),
+        });
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
         });

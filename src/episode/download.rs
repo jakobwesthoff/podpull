@@ -133,13 +133,18 @@ pub async fn stage_download<C: HttpClient>(
     // any download starts, so an existing one belongs to another download
     // targeting the same path. Opening exclusively turns such a conflict into
     // an error instead of two downloads interleaving their bytes in one file.
-    let mut file =
-        File::create_new(&partial_path)
-            .await
-            .map_err(|e| DownloadError::FileCreateFailed {
+    let mut file = File::create_new(&partial_path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            DownloadError::PartialFileExists {
+                path: partial_path.clone(),
+            }
+        } else {
+            DownloadError::FileCreateFailed {
                 path: partial_path.clone(),
                 source: e,
-            })?;
+            }
+        }
+    })?;
 
     // Initialize hasher for streaming hash computation
     let mut hasher = Sha256::new();
@@ -379,11 +384,8 @@ mod tests {
         .await;
 
         match result.unwrap_err() {
-            DownloadError::FileCreateFailed { path, source } => {
-                assert_eq!(path, partial_path);
-                assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
-            }
-            other => panic!("Expected FileCreateFailed, got {other:?}"),
+            DownloadError::PartialFileExists { path } => assert_eq!(path, partial_path),
+            other => panic!("Expected PartialFileExists, got {other:?}"),
         }
         assert_eq!(
             std::fs::read(&partial_path).unwrap(),

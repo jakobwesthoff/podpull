@@ -55,6 +55,11 @@ pub enum DownloadError {
         source: std::io::Error,
     },
 
+    #[error(
+        "Partial file {path} already exists; delete it if no other podpull run is writing to it"
+    )]
+    PartialFileExists { path: PathBuf },
+
     #[error("Failed to write to file {path}: {source}")]
     FileWriteFailed {
         path: PathBuf,

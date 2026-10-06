@@ -24,6 +24,9 @@ pub struct OutputState {
     pub output_dir: PathBuf,
     /// Number of partial files that were cleaned up during scan
     pub partial_files_cleaned: usize,
+    /// Partial files the scan could not remove; a download into such a
+    /// path fails until the file is gone
+    pub stuck_partial_files: Vec<PathBuf>,
     /// Episode metadata files that exist but could not be read or parsed
     pub unreadable_metadata: Vec<PathBuf>,
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
@@ -102,6 +105,7 @@ pub fn scan_output_dir(
             existing_files,
             output_dir: output_dir.to_path_buf(),
             partial_files_cleaned,
+            stuck_partial_files: Vec::new(),
             unreadable_metadata: Vec::new(),
             claimed_stems: HashSet::new(),
             stored_episodes: HashMap::new(),
@@ -145,9 +149,11 @@ pub fn scan_output_dir(
     }
 
     // Clean up partial files (fast local operation)
+    let mut stuck_partial_files = Vec::new();
     for path in partial_files {
-        if std::fs::remove_file(&path).is_ok() {
-            partial_files_cleaned += 1;
+        match std::fs::remove_file(&path) {
+            Ok(()) => partial_files_cleaned += 1,
+            Err(_) => stuck_partial_files.push(path),
         }
     }
 
@@ -223,6 +229,7 @@ pub fn scan_output_dir(
         existing_files,
         output_dir: output_dir.to_path_buf(),
         partial_files_cleaned,
+        stuck_partial_files,
         unreadable_metadata,
         claimed_stems,
         stored_episodes,
@@ -354,6 +361,7 @@ mod tests {
             existing_files: HashSet::new(),
             output_dir: PathBuf::from("/tmp"),
             partial_files_cleaned: 0,
+            stuck_partial_files: Vec::new(),
             unreadable_metadata: Vec::new(),
             claimed_stems: HashSet::new(),
             stored_episodes: HashMap::new(),
@@ -507,6 +515,20 @@ mod tests {
             state.stored_episodes[&filename_claim_key("2024-01-15-Bare")].audio_filename,
             "2024-01-15-Bare"
         );
+    }
+
+    #[test]
+    fn scan_records_partial_files_it_cannot_remove() {
+        let dir = tempdir().unwrap();
+        // A directory cannot be removed like a file.
+        let stuck = dir.path().join("2024-01-15-Episode.mp3.partial");
+        std::fs::create_dir(&stuck).unwrap();
+        std::fs::write(dir.path().join("2024-01-16-Episode.mp3.partial"), b"").unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        assert_eq!(state.partial_files_cleaned, 1);
+        assert_eq!(state.stuck_partial_files, vec![stuck]);
     }
 
     #[test]

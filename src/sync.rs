@@ -88,6 +88,10 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
+    for path in &state.stuck_partial_files {
+        reporter.report(ProgressEvent::PartialFileStuck { path: path.clone() });
+    }
+
     for path in &state.unreadable_metadata {
         reporter.report(ProgressEvent::MetadataUnreadable { path: path.clone() });
     }
@@ -1130,6 +1134,22 @@ mod tests {
                 .join(format!("{}.mp3.partial", NOMAD_STEM))
                 .exists()
         );
+    }
+
+    #[tokio::test]
+    async fn sync_reports_partial_files_it_cannot_remove() {
+        let dir = tempdir().unwrap();
+        let stuck = dir.path().join(format!("{}.mp3.partial", NOMAD_STEM));
+        std::fs::create_dir(&stuck).unwrap();
+
+        let (result, events) = sync_recording(dir.path(), &[NOMAD_ORIGINAL]).await;
+
+        assert_eq!(result.failed, 1);
+        assert!(result.failed_episodes[0].1.contains("already exists"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProgressEvent::PartialFileStuck { path } if *path == stuck
+        )));
     }
 
     #[tokio::test]
