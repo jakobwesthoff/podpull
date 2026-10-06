@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::sync::DamageRemedy;
+use crate::damage::DamageRemedy;
 
 /// Events emitted during podcast synchronization for progress reporting
 ///

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+pub mod damage;
 pub mod episode;
 pub mod error;
 pub mod feed;
@@ -14,6 +15,7 @@ pub mod sync;
 
 // Re-export main types for convenience
 // Kept for compatibility; it yields names that can collide.
+pub use damage::{DamageKind, DamageRemedy, DamagedAudio};
 #[allow(deprecated)]
 pub use episode::generate_filename;
 pub use episode::{
@@ -36,6 +38,4 @@ pub use state::{
     CheckTarget, OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata,
     create_sync_plan, scan_output_dir,
 };
-pub use sync::{
-    AudioCheck, DamageKind, DamageRemedy, DamagedAudio, SyncOptions, SyncResult, sync_podcast,
-};
+pub use sync::{AudioCheck, SyncOptions, SyncResult, sync_podcast};
