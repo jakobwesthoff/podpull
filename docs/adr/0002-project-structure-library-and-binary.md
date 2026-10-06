@@ -8,6 +8,8 @@ Accepted
 
 Enables [7. Error handling strategy](0007-error-handling-strategy.md)
 
+Amended by [18. Library is internal to podpull](0018-library-is-internal-to-podpull.md)
+
 ## Context
 
 podpull is a CLI tool for downloading podcasts, but its core functionality (fetching feeds, parsing RSS, downloading episodes, managing metadata) could potentially be useful to other Rust applications or embedded in different interfaces (GUI, web service, etc.).

@@ -4,11 +4,13 @@ Date: 2026-01-31
 
 ## Status
 
-Accepted
+Superseded
 
 Builds on [2. Project structure: library and binary](0002-project-structure-library-and-binary.md)
 
 Amended by [17. Distinct filenames for episodes sharing title and date](0017-distinct-filenames-for-episodes-sharing-title-and-date.md)
+
+Superseded by [18. Library is internal to podpull](0018-library-is-internal-to-podpull.md)
 
 ## Context
 

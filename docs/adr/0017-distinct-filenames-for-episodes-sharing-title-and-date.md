@@ -48,8 +48,6 @@ Comparing names as plain strings is not enough to detect such a collision. A net
 
 **Metadata problems are told apart.** A metadata file whose content is not valid metadata, including text that is not UTF-8, is reported as `MetadataUnreadable` and keeps its stem claimed. Any other error reading one stops the scan, since it may be a passing network failure.
 
-**Library types that podpull builds or hands out are `#[non_exhaustive]`.** `SyncOptions`, `SyncResult`, `ProgressEvent`, `PlannedDownload`, `StoredEpisode`, `CheckTarget`, `DamagedAudio`, `DamageKind`, `DamageRemedy`, `AudioCheck`, `SyncPlan`, `UnreadableMetadata`, `EpisodeMetadata`, `PodcastMetadata`, `DownloadContext` and `DownloadResult` can gain fields or variants without breaking library users. Where callers build such a value, a constructor exists: `Default` for `SyncOptions` and `SyncResult`, `new` for `PlannedDownload`, `DamagedAudio` and `DownloadContext`, `from_episode` and `from_podcast` for the metadata. `OutputState`, `SyncPlan`, `CheckTarget`, `StoredEpisode` and `UnreadableMetadata` come only from the scan and the plan. The feed types (`Podcast`, `Episode`, `Enclosure`), `HttpResponse` and the error enums are not covered by this decision.
-
 **`sync_podcast` requires only `HttpClient`.** Downloads run as concurrent futures on the caller's task, so the client is borrowed and needs neither `Clone` nor `'static`.
 
 ## Consequences
@@ -63,5 +61,3 @@ Comparing names as plain strings is not enough to detect such a collision. A net
 - Separate entries with byte-identical audio are stored as separate copies.
 - A re-issue that also changed the title or publication time is stored a second time.
 - `--verify` and `--repair` read the whole archive; on a network share that is a full transfer of every audio file.
-- `generate_filename` returns the base name only, which can collide, and is deprecated. Library users get collision-free names from the `to_download` entries of `SyncPlan`.
-- Code outside the crate builds `SyncOptions` and `SyncResult` from `Default`, uses constructors for `DamagedAudio` and `PlannedDownload`, and needs a catch-all arm when matching `ProgressEvent` or `DamageRemedy`.
