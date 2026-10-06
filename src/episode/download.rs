@@ -104,7 +104,34 @@ pub(crate) fn hash_file(path: &Path) -> std::io::Result<String> {
 ///
 /// Staging lets a caller put the episode's metadata in place before the
 /// audio becomes visible, so an interruption never leaves audio without
-/// metadata behind.
+/// metadata behind:
+///
+/// ```no_run
+/// use podpull::{
+///     DownloadContext, Episode, NoopReporter, ReqwestClient,
+///     SharedProgressReporter, stage_download, stage_episode_metadata,
+/// };
+/// use std::path::Path;
+/// use std::sync::Arc;
+///
+/// # async fn store(episode: &Episode) -> Result<(), Box<dyn std::error::Error>> {
+/// let client = ReqwestClient::new();
+/// let reporter: SharedProgressReporter = Arc::new(NoopReporter);
+/// let context = DownloadContext::new(0, 0, 1);
+/// let audio_path = Path::new("archive/2024-12-19-Sega Nomad.mp3");
+///
+/// let audio = stage_download(&client, episode, audio_path, &context, &reporter).await?;
+/// let metadata = stage_episode_metadata(
+///     episode,
+///     "2024-12-19-Sega Nomad.mp3",
+///     Some(audio.content_hash().to_string()),
+///     Path::new("archive/2024-12-19-Sega Nomad.json"),
+/// )?;
+/// audio.finalize().await?;
+/// metadata.commit()?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct StagedDownload {
     partial_path: PathBuf,

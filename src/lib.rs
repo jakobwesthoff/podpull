@@ -17,8 +17,8 @@ pub mod sync;
 #[allow(deprecated)]
 pub use episode::generate_filename;
 pub use episode::{
-    DownloadContext, DownloadResult, download_episode, filename_claim_key, generate_filename_stem,
-    generate_unique_filename_stem, get_audio_extension,
+    DownloadContext, DownloadResult, StagedDownload, download_episode, filename_claim_key,
+    generate_filename_stem, generate_unique_filename_stem, get_audio_extension, stage_download,
 };
 pub use error::{DownloadError, FeedError, MetadataError, StateError, SyncError};
 pub use feed::{
@@ -27,8 +27,9 @@ pub use feed::{
 };
 pub use http::{HttpClient, HttpResponse, ReqwestClient};
 pub use metadata::{
-    EpisodeMetadata, PodcastMetadata, add_guid_to_episode_metadata, read_episode_metadata,
-    read_podcast_metadata, write_episode_metadata, write_podcast_metadata,
+    EpisodeMetadata, PodcastMetadata, StagedMetadata, add_guid_to_episode_metadata,
+    read_episode_metadata, read_podcast_metadata, stage_episode_metadata, write_episode_metadata,
+    write_podcast_metadata,
 };
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
 pub use state::{
