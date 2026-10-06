@@ -39,6 +39,7 @@ url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3.24.0"
+tokio = { version = "1.49.0", features = ["time", "macros", "rt-multi-thread"] }
 
 [profile.release]
 strip = true

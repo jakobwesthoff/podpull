@@ -4,17 +4,12 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use tokio::sync::Mutex;
-
 use url::Url;
 
 use crate::episode::{DownloadContext, download_episode, hash_file};
 use crate::error::{FeedError, SyncError};
 use crate::feed::{
-    Episode, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
+    Episode, Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
 };
 use crate::http::HttpClient;
 use crate::metadata::{write_episode_metadata, write_podcast_metadata};
@@ -74,32 +69,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     options: &SyncOptions,
     reporter: SharedProgressReporter,
 ) -> Result<SyncResult, SyncError> {
-    // Fetch and parse feed with granular progress reporting
-    let podcast = if is_url(feed_source) {
-        // For URLs: report fetching, then parsing
-        reporter.report(ProgressEvent::FetchingFeed {
-            url: feed_source.to_string(),
-        });
-
-        let bytes = fetch_feed_bytes(client, feed_source).await?;
-
-        reporter.report(ProgressEvent::ParsingFeed {
-            source: feed_source.to_string(),
-        });
-
-        let feed_url =
-            Url::parse(feed_source).map_err(|e| SyncError::Feed(FeedError::InvalidUrl(e)))?;
-        parse_feed(&bytes, feed_url)?
-    } else {
-        // For local files: skip "Fetching" and go straight to parsing
-        reporter.report(ProgressEvent::ParsingFeed {
-            source: feed_source.to_string(),
-        });
-
-        let bytes = read_feed_file(Path::new(feed_source))?;
-        let feed_url = file_path_to_url(Path::new(feed_source));
-        parse_feed(&bytes, feed_url)?
-    };
+    let podcast = load_podcast(client, feed_source, &reporter).await?;
 
     // Scan output directory (also cleans up any partial files from interrupted downloads)
     // Progress is reported from within scan_output_dir
@@ -172,108 +142,11 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
-    // Download episodes in parallel using a slot pool
-    // The slot pool serves dual purpose: limits concurrency AND provides stable slot IDs
-    let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(options.max_concurrent);
-    for slot in 0..options.max_concurrent {
-        slot_tx.send(slot).await.unwrap();
-    }
-    let slot_rx = Arc::new(Mutex::new(slot_rx));
-
-    let downloaded_count = Arc::new(AtomicUsize::new(0));
-    let failed_count = Arc::new(AtomicUsize::new(verification.failures.len()));
-    let failed_episodes = Arc::new(Mutex::new(verification.failures));
-
-    let output_dir = output_dir.to_path_buf();
-    let client = client.clone();
-
-    let mut handles = Vec::new();
-
-    for (episode_index, planned) in to_download.into_iter().enumerate() {
-        // Acquire a slot from the pool BEFORE spawning (blocks until one is free)
-        // This ensures episodes are started in order
-        let download_id = slot_rx.lock().await.recv().await.unwrap();
-
-        let slot_tx = slot_tx.clone();
-        let client = client.clone();
-        let output_dir = output_dir.clone();
-        let reporter = reporter.clone();
-        let downloaded_count = downloaded_count.clone();
-        let failed_count = failed_count.clone();
-        let failed_episodes = failed_episodes.clone();
-        let continue_on_error = options.continue_on_error;
-
-        let handle = tokio::spawn(async move {
-            let context = DownloadContext {
-                download_id,
-                episode_index,
-                total_to_download,
-            };
-
-            let episode = planned.episode;
-            let audio_path = output_dir.join(&planned.audio_filename);
-            let metadata_path = output_dir.join(&planned.metadata_filename);
-
-            let result =
-                download_episode(&client, &episode, &audio_path, &context, &reporter).await;
-
-            let return_result = match result {
-                Ok(download_result) => {
-                    // Write episode metadata with content hash
-                    if let Err(e) = write_episode_metadata(
-                        &episode,
-                        &planned.audio_filename,
-                        Some(download_result.content_hash),
-                        &metadata_path,
-                    ) {
-                        reporter.report(ProgressEvent::DownloadFailed {
-                            download_id,
-                            episode_title: episode.title.clone(),
-                            error: format!("Failed to write metadata: {}", e),
-                        });
-                        failed_count.fetch_add(1, Ordering::SeqCst);
-                        failed_episodes
-                            .lock()
-                            .await
-                            .push((episode.title.clone(), e.to_string()));
-                    } else {
-                        downloaded_count.fetch_add(1, Ordering::SeqCst);
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    reporter.report(ProgressEvent::DownloadFailed {
-                        download_id,
-                        episode_title: episode.title.clone(),
-                        error: e.to_string(),
-                    });
-                    failed_count.fetch_add(1, Ordering::SeqCst);
-                    failed_episodes
-                        .lock()
-                        .await
-                        .push((episode.title.clone(), e.to_string()));
-
-                    if !continue_on_error { Err(e) } else { Ok(()) }
-                }
-            };
-
-            // Return slot to the pool when done
-            let _ = slot_tx.send(download_id).await;
-
-            return_result
-        });
-
-        handles.push(handle);
-    }
-
-    // Wait for all downloads to complete
-    for handle in handles {
-        let _ = handle.await;
-    }
-
-    let downloaded = downloaded_count.load(Ordering::SeqCst);
-    let failed = failed_count.load(Ordering::SeqCst);
-    let failed_eps = failed_episodes.lock().await.clone();
+    let totals = download_all(client, to_download, output_dir, &reporter, options).await;
+    let downloaded = totals.downloaded;
+    let mut failed_eps = verification.failures;
+    failed_eps.extend(totals.failed_episodes);
+    let failed = failed_eps.len();
 
     reporter.report(ProgressEvent::SyncCompleted {
         downloaded_count: downloaded,
@@ -292,6 +165,154 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         failed,
         failed_episodes: failed_eps,
     })
+}
+
+/// Fetch or read the feed and parse it, reporting each phase
+async fn load_podcast<C: HttpClient>(
+    client: &C,
+    feed_source: &str,
+    reporter: &SharedProgressReporter,
+) -> Result<Podcast, SyncError> {
+    if is_url(feed_source) {
+        reporter.report(ProgressEvent::FetchingFeed {
+            url: feed_source.to_string(),
+        });
+        let bytes = fetch_feed_bytes(client, feed_source).await?;
+
+        reporter.report(ProgressEvent::ParsingFeed {
+            source: feed_source.to_string(),
+        });
+        let feed_url =
+            Url::parse(feed_source).map_err(|e| SyncError::Feed(FeedError::InvalidUrl(e)))?;
+        Ok(parse_feed(&bytes, feed_url)?)
+    } else {
+        // A local file has no fetching phase.
+        reporter.report(ProgressEvent::ParsingFeed {
+            source: feed_source.to_string(),
+        });
+        let bytes = read_feed_file(Path::new(feed_source))?;
+        let feed_url = file_path_to_url(Path::new(feed_source));
+        Ok(parse_feed(&bytes, feed_url)?)
+    }
+}
+
+/// What became of one planned download
+enum DownloadOutcome {
+    Downloaded,
+    Failed { error: String },
+}
+
+/// Results of all downloads of one sync run
+struct DownloadTotals {
+    downloaded: usize,
+    /// Failed downloads as (episode title, error message) pairs
+    failed_episodes: Vec<(String, String)>,
+}
+
+/// Returns a download slot to the pool when the task holding it ends,
+/// including by panic, so a failing task cannot starve later downloads.
+struct SlotGuard {
+    pool: tokio::sync::mpsc::Sender<usize>,
+    download_id: usize,
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        // The pool holds exactly as many slots as it has capacity for, so
+        // handing one back never finds it full. A closed pool means the sync
+        // stopped waiting for slots, and the slot is no longer needed.
+        let _ = self.pool.try_send(self.download_id);
+    }
+}
+
+/// Download all planned episodes in parallel and write their metadata
+///
+/// A pool of slot IDs limits concurrency and gives each running download a
+/// stable ID for its progress bar. Episodes start in plan order.
+async fn download_all<C: HttpClient + Clone + 'static>(
+    client: &C,
+    to_download: Vec<PlannedDownload>,
+    output_dir: &Path,
+    reporter: &SharedProgressReporter,
+    options: &SyncOptions,
+) -> DownloadTotals {
+    let total_to_download = to_download.len();
+    let (slot_tx, mut slot_rx) = tokio::sync::mpsc::channel(options.max_concurrent);
+    for slot in 0..options.max_concurrent {
+        slot_tx
+            .try_send(slot)
+            .expect("channel capacity equals the number of slots");
+    }
+
+    // The title stays outside the task, so a task that panics can still be
+    // reported under its episode.
+    let mut tasks = Vec::new();
+
+    for (episode_index, planned) in to_download.into_iter().enumerate() {
+        let download_id = slot_rx
+            .recv()
+            .await
+            .expect("slot_tx stays alive in this function, so the channel never closes");
+        let slot = SlotGuard {
+            pool: slot_tx.clone(),
+            download_id,
+        };
+
+        let client = client.clone();
+        let output_dir = output_dir.to_path_buf();
+        let reporter = reporter.clone();
+        let title = planned.episode.title.clone();
+
+        let task = tokio::spawn(async move {
+            let _slot = slot;
+            let context = DownloadContext {
+                download_id,
+                episode_index,
+                total_to_download,
+            };
+            let episode = planned.episode;
+            let audio_path = output_dir.join(&planned.audio_filename);
+            let metadata_path = output_dir.join(&planned.metadata_filename);
+
+            let error =
+                match download_episode(&client, &episode, &audio_path, &context, &reporter).await {
+                    Ok(download_result) => match write_episode_metadata(
+                        &episode,
+                        &planned.audio_filename,
+                        Some(download_result.content_hash),
+                        &metadata_path,
+                    ) {
+                        Ok(()) => return DownloadOutcome::Downloaded,
+                        Err(e) => format!("Failed to write metadata: {}", e),
+                    },
+                    Err(e) => e.to_string(),
+                };
+
+            reporter.report(ProgressEvent::DownloadFailed {
+                download_id,
+                episode_title: episode.title.clone(),
+                error: error.clone(),
+            });
+            DownloadOutcome::Failed { error }
+        });
+
+        tasks.push((title, task));
+    }
+
+    let mut totals = DownloadTotals {
+        downloaded: 0,
+        failed_episodes: Vec::new(),
+    };
+    for (title, task) in tasks {
+        match task.await {
+            Ok(DownloadOutcome::Downloaded) => totals.downloaded += 1,
+            Ok(DownloadOutcome::Failed { error }) => totals.failed_episodes.push((title, error)),
+            Err(join_error) => totals
+                .failed_episodes
+                .push((title, format!("Download task failed: {}", join_error))),
+        }
+    }
+    totals
 }
 
 /// Outcome of checking the audio files that planned downloads collide with
@@ -376,6 +397,7 @@ async fn verify_collided_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     use crate::http::{ByteStream, HttpResponse};
     use crate::progress::{NoopReporter, ProgressReporter};
@@ -1165,5 +1187,56 @@ mod tests {
         assert_eq!(result.failed, 1);
         assert_eq!(std::fs::read(&audio).unwrap(), b"damaged");
         assert!(!mismatch_events(&events)[0].2);
+    }
+
+    /// Panics while a download reports its completion, as a faulty
+    /// reporter implementation would
+    struct PanickingReporter;
+
+    impl ProgressReporter for PanickingReporter {
+        fn report(&self, event: ProgressEvent) {
+            if matches!(event, ProgressEvent::DownloadCompleted { .. }) {
+                panic!("reporter failure");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_counts_panicking_download_tasks_as_failed() {
+        let dir = tempdir().unwrap();
+        let client = MockHttpClient {
+            feed_xml: SAMPLE_FEED.to_string(),
+            audio_data: b"fake audio".to_vec(),
+        };
+        let options = SyncOptions {
+            max_concurrent: 1,
+            ..Default::default()
+        };
+
+        // With a single slot, a task that never hands its slot back would
+        // block the second episode forever.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sync_podcast(
+                &client,
+                "https://example.com/feed.xml",
+                dir.path(),
+                &options,
+                Arc::new(PanickingReporter),
+            ),
+        )
+        .await
+        .expect("sync finishes although its download tasks panic")
+        .unwrap();
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.failed, 2);
+        let mut titles: Vec<_> = result
+            .failed_episodes
+            .iter()
+            .map(|(title, _)| title.as_str())
+            .collect();
+        titles.sort();
+        assert_eq!(titles, vec!["Episode 1", "Episode 2"]);
     }
 }
