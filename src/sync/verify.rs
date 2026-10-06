@@ -49,10 +49,9 @@ pub(super) async fn verify_stored_audio(
     for target in targets {
         let stored = &target.stored;
 
-        // Missing audio is told by the directory listing. A file the listing
-        // shows but that cannot be read is reported as unverifiable instead:
-        // a share may fail to open a name it lists, and taking that for a
-        // missing file would download it again for nothing.
+        // Missing audio is told by the directory listing. An error reading a
+        // listed file, such as a dropped network connection, says nothing
+        // about the file, so it is reported as unverifiable instead.
         let kind = if !stored.audio_listed {
             DamageKind::Missing
         } else {
