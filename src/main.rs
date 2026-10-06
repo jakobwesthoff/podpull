@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +15,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use podpull::{
     AudioCheck, DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter, ReqwestClient,
-    SharedProgressReporter, SyncOptions, sync_podcast,
+    SharedProgressReporter, SyncOptions, SyncResult, sync_podcast,
 };
 
 // Emoji with fallback for terminals without Unicode support
@@ -494,22 +495,56 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to sync podcast")?;
 
-    if !args.quiet && !result.failed_episodes.is_empty() {
-        println!("\n{}", "Failed episodes:".red().bold());
+    // Quiet mode suppresses progress, not problems: scripts and cron jobs
+    // still see what needs attention, on stderr.
+    if args.quiet {
+        write_problem_lists(&result, &mut std::io::stderr())
+            .context("write the problem lists to stderr")?;
+    } else {
+        write_problem_lists(&result, &mut std::io::stdout())
+            .context("write the problem lists to stdout")?;
+        println!(
+            "\n{FOLDER}Output: {}\n",
+            args.output_dir.display().to_string().cyan()
+        );
+    }
+
+    let code = exit_code(&result);
+    if code != 0 {
+        std::process::exit(code);
+    }
+
+    Ok(())
+}
+
+/// Exit status of a finished sync
+///
+/// 1 when downloads failed and none succeeded; 2 when some downloads failed
+/// or damaged audio was found but the run got something done.
+fn exit_code(result: &SyncResult) -> i32 {
+    if result.failed > 0 && result.downloaded == 0 {
+        1
+    } else if result.failed > 0 || !result.damaged.is_empty() {
+        2
+    } else {
+        0
+    }
+}
+
+/// Write the failed and damaged episodes of a sync, if there are any
+fn write_problem_lists(result: &SyncResult, out: &mut impl Write) -> std::io::Result<()> {
+    if !result.failed_episodes.is_empty() {
+        writeln!(out, "\n{}", "Failed episodes:".red().bold())?;
         for (title, error) in &result.failed_episodes {
-            println!(
-                "  {}{} - {}",
-                CROSS,
-                title.yellow(),
-                error.to_string().dimmed()
-            );
+            writeln!(out, "  {}{} - {}", CROSS, title.yellow(), error.dimmed())?;
         }
     }
 
-    if !args.quiet && !result.damaged.is_empty() {
-        println!("\n{}", "Damaged episodes:".red().bold());
+    if !result.damaged.is_empty() {
+        writeln!(out, "\n{}", "Damaged episodes:".red().bold())?;
         for damaged in &result.damaged {
-            println!(
+            writeln!(
+                out,
                 "  {}{}",
                 CROSS,
                 damage_message(
@@ -517,27 +552,16 @@ async fn main() -> Result<()> {
                     &damaged.audio_filename,
                     damaged.remedy
                 )
-            );
+            )?;
         }
     }
-
-    if !args.quiet {
-        println!(
-            "\n{FOLDER}Output: {}\n",
-            args.output_dir.display().to_string().cyan()
-        );
-    }
-
-    if result.failed > 0 && result.downloaded == 0 {
-        std::process::exit(1);
-    }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use podpull::DamagedAudio;
 
     #[test]
     fn plan_message_shows_only_new_episodes_without_limit_or_repairs() {
@@ -661,6 +685,67 @@ mod tests {
             "Could not read 2024-12-19-Sega Nomad.mp3 to check it against its \
              recorded hash (Permission denied)"
         );
+    }
+
+    fn result(downloaded: usize, failed: usize, damaged: usize) -> SyncResult {
+        SyncResult {
+            downloaded,
+            skipped: 0,
+            failed,
+            failed_episodes: (0..failed)
+                .map(|n| (format!("Episode {}", n), "HTTP error 404".to_string()))
+                .collect(),
+            not_started: 0,
+            damaged: (0..damaged)
+                .map(|n| DamagedAudio {
+                    episode_title: format!("Damaged {}", n),
+                    audio_filename: format!("2024-01-0{}-Damaged.mp3", n + 1),
+                    remedy: DamageRemedy::RepairAvailable,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn exit_code_is_zero_without_problems() {
+        assert_eq!(exit_code(&result(3, 0, 0)), 0);
+        assert_eq!(exit_code(&result(0, 0, 0)), 0);
+    }
+
+    #[test]
+    fn exit_code_is_one_when_nothing_could_be_downloaded() {
+        assert_eq!(exit_code(&result(0, 2, 0)), 1);
+    }
+
+    #[test]
+    fn exit_code_is_two_for_partial_failure_or_damage() {
+        assert_eq!(exit_code(&result(3, 1, 0)), 2);
+        assert_eq!(exit_code(&result(3, 0, 1)), 2);
+        assert_eq!(exit_code(&result(0, 0, 1)), 2);
+    }
+
+    #[test]
+    fn problem_lists_name_failed_and_damaged_episodes() {
+        colored::control::set_override(false);
+        let mut out = Vec::new();
+
+        write_problem_lists(&result(1, 1, 1), &mut out).unwrap();
+
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("Failed episodes:"));
+        assert!(out.contains("Episode 0"));
+        assert!(out.contains("HTTP error 404"));
+        assert!(out.contains("Damaged episodes:"));
+        assert!(out.contains("2024-01-01-Damaged.mp3"));
+    }
+
+    #[test]
+    fn problem_lists_are_empty_without_problems() {
+        let mut out = Vec::new();
+
+        write_problem_lists(&result(3, 0, 0), &mut out).unwrap();
+
+        assert!(out.is_empty());
     }
 
     #[test]
