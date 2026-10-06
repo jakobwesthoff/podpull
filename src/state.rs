@@ -332,7 +332,18 @@ pub fn scan_output_dir(
 ///
 /// Episodes are sorted by publication date (newest first). Episodes without
 /// a publication date are placed at the end, preserving their relative order.
-pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan {
+pub fn create_sync_plan(mut episodes: Vec<Episode>, state: &OutputState) -> SyncPlan {
+    sort_newest_first(&mut episodes);
+
+    // The GUID identifies an episode, so a feed listing one twice still
+    // holds one episode; the newest listing is kept. Episodes without a
+    // GUID have nothing to compare and all stay.
+    let mut seen_guids = HashSet::new();
+    episodes.retain(|episode| match &episode.guid {
+        Some(guid) => seen_guids.insert(guid.clone()),
+        None => true,
+    });
+
     let total_episodes = episodes.len();
     let mut to_download = Vec::new();
     let mut already_present = Vec::new();
@@ -349,15 +360,6 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
             to_download.push(episode);
         }
     }
-
-    // Sort episodes by publication date (newest first)
-    // Episodes without pub_date are placed at the end
-    to_download.sort_by(|a, b| match (&b.pub_date, &a.pub_date) {
-        (Some(b_date), Some(a_date)) => b_date.cmp(a_date),
-        (Some(_), None) => std::cmp::Ordering::Greater, // b has date, a doesn't => b comes first
-        (None, Some(_)) => std::cmp::Ordering::Less,    // a has date, b doesn't => a comes first
-        (None, None) => std::cmp::Ordering::Equal,
-    });
 
     // The plan decides where every download goes, so that the paths of all
     // downloads are known before any of them starts. Names are handed out in
@@ -392,6 +394,18 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
         already_present,
         total_episodes,
     }
+}
+
+/// Sort episodes by publication date, newest first
+///
+/// Episodes without a publication date go last, keeping their order.
+fn sort_newest_first(episodes: &mut [Episode]) {
+    episodes.sort_by(|a, b| match (&b.pub_date, &a.pub_date) {
+        (Some(b_date), Some(a_date)) => b_date.cmp(a_date),
+        (Some(_), None) => std::cmp::Ordering::Greater, // b has date, a doesn't => b comes first
+        (None, Some(_)) => std::cmp::Ordering::Less,    // a has date, b doesn't => a comes first
+        (None, None) => std::cmp::Ordering::Equal,
+    });
 }
 
 #[cfg(test)]
@@ -886,6 +900,53 @@ mod tests {
                 .iter()
                 .all(|planned| planned.collides_with.is_none())
         );
+    }
+
+    #[test]
+    fn sync_plan_downloads_a_repeated_guid_once() {
+        let older = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-1"),
+            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
+        );
+        let newer = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-1"),
+            make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
+        );
+
+        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]));
+
+        // The GUID is podpull's identity of an episode, so a feed listing it
+        // twice still holds one episode; the newer listing wins.
+        assert_eq!(plan.total_episodes, 1);
+        assert_eq!(plan.to_download.len(), 1);
+        assert_eq!(
+            plan.to_download[0].episode.pub_date,
+            make_time("Thu, 19 Dec 2024 10:45:35 +0000")
+        );
+    }
+
+    #[test]
+    fn sync_plan_counts_a_repeated_present_guid_once() {
+        let episodes = vec![
+            make_episode("Ep 1", Some("guid-1")),
+            make_episode("Ep 1", Some("guid-1")),
+        ];
+
+        let plan = create_sync_plan(episodes, &state_with_guids(&["guid-1"]));
+
+        assert_eq!(plan.already_present.len(), 1);
+        assert_eq!(plan.total_episodes, 1);
+    }
+
+    #[test]
+    fn sync_plan_keeps_episodes_without_guid_apart() {
+        let episodes = vec![make_episode("Ep 1", None), make_episode("Ep 2", None)];
+
+        let plan = create_sync_plan(episodes, &state_with_guids(&[]));
+
+        assert_eq!(plan.to_download.len(), 2);
     }
 
     #[test]
