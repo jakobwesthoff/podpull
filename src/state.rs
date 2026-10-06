@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::episode::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };
-use crate::error::StateError;
+use crate::error::{MetadataError, StateError};
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
 use crate::progress::{ProgressEvent, SharedProgressReporter};
@@ -27,13 +27,21 @@ pub struct OutputState {
     /// Partial files the scan could not remove; a download into such a
     /// path fails until the file is gone
     pub stuck_partial_files: Vec<PathBuf>,
-    /// Episode metadata files that exist but could not be read or parsed
-    pub unreadable_metadata: Vec<PathBuf>,
+    /// Episode metadata files whose content is not valid metadata
+    pub unreadable_metadata: Vec<UnreadableMetadata>,
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
     /// the output directory, which new downloads must not reuse
     pub claimed_stems: HashSet<String>,
     /// Episodes with readable metadata, keyed by the claim key of their stem
     pub stored_episodes: HashMap<String, StoredEpisode>,
+}
+
+/// An episode metadata file whose content could not be parsed
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableMetadata {
+    pub path: PathBuf,
+    /// Why the content could not be used
+    pub error: String,
 }
 
 /// An episode downloaded by an earlier run, as its metadata records it
@@ -215,7 +223,23 @@ pub fn scan_output_dir(
                     downloaded_guids.insert(guid);
                 }
             }
-            Err(_) => unreadable_metadata.push(path),
+            // Content that is not valid metadata stays broken on every run,
+            // so it is reported and its episode downloaded again. An I/O
+            // error, by contrast, may be a passing network failure; treating
+            // it the same would leave a second copy once the file reads fine
+            // again, so the scan stops and the next run retries.
+            Err(MetadataError::ReadFailed { source, .. })
+                if source.kind() != std::io::ErrorKind::InvalidData =>
+            {
+                return Err(StateError::Metadata(MetadataError::ReadFailed {
+                    path,
+                    source,
+                }));
+            }
+            Err(error) => unreadable_metadata.push(UnreadableMetadata {
+                path,
+                error: error.to_string(),
+            }),
         }
 
         reporter.report(ProgressEvent::ScanningDirectory {
@@ -436,11 +460,42 @@ mod tests {
 
         let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
 
-        assert_eq!(
-            state.unreadable_metadata,
-            vec![dir.path().join("truncated.json")]
-        );
+        let unreadable: Vec<_> = state
+            .unreadable_metadata
+            .iter()
+            .map(|unreadable| &unreadable.path)
+            .collect();
+        assert_eq!(unreadable, vec![&dir.path().join("truncated.json")]);
+        assert!(state.unreadable_metadata[0].error.contains("EOF"));
         assert!(state.downloaded_guids.contains("readable-guid"));
+    }
+
+    #[test]
+    fn scan_records_metadata_that_is_not_utf8_as_unreadable() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("binary.json"), [0xff, 0xfe, 0x00]).unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        assert_eq!(
+            state.unreadable_metadata[0].path,
+            dir.path().join("binary.json")
+        );
+    }
+
+    #[test]
+    fn scan_fails_when_metadata_cannot_be_read_from_disk() {
+        let dir = tempdir().unwrap();
+        // Reading a directory fails with an I/O error, as a dropped network
+        // connection would, rather than yielding broken content.
+        std::fs::create_dir(dir.path().join("2024-01-15-Episode.json")).unwrap();
+
+        let result = scan_output_dir(dir.path(), &NoopReporter::shared());
+
+        assert!(matches!(
+            result,
+            Err(StateError::Metadata(MetadataError::ReadFailed { .. }))
+        ));
     }
 
     #[test]

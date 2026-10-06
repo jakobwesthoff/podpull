@@ -94,8 +94,9 @@ pub enum ProgressEvent {
     /// A partial file left by an interrupted download could not be removed
     PartialFileStuck { path: PathBuf },
 
-    /// An episode metadata file in the output directory could not be read
-    MetadataUnreadable { path: PathBuf },
+    /// An episode metadata file in the output directory holds no valid
+    /// metadata
+    MetadataUnreadable { path: PathBuf, error: String },
 
     /// An existing audio file that a new episode collided with no longer
     /// matches the hash recorded when it was downloaded
@@ -223,6 +224,7 @@ mod tests {
 
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
+            error: "EOF while parsing".to_string(),
         });
 
         reporter.report(ProgressEvent::StoredAudioMismatch {

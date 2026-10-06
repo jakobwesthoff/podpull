@@ -275,12 +275,12 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            ProgressEvent::MetadataUnreadable { path } => {
+            ProgressEvent::MetadataUnreadable { path, error } => {
                 // Printed above the progress bars so the warning outlives
                 // the transient status line.
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    unreadable_metadata_message(&path).yellow()
+                    unreadable_metadata_message(&path, &error).yellow()
                 ));
             }
 
@@ -344,8 +344,12 @@ fn stuck_partial_file_message(path: &Path) -> String {
     )
 }
 
-fn unreadable_metadata_message(path: &Path) -> String {
-    format!("Could not read episode metadata {}", path.display())
+fn unreadable_metadata_message(path: &Path, error: &str) -> String {
+    format!(
+        "Could not read episode metadata {} ({})",
+        path.display(),
+        error
+    )
 }
 
 fn stored_audio_mismatch_message(
@@ -468,8 +472,12 @@ mod tests {
     #[test]
     fn unreadable_metadata_message_names_the_file() {
         assert_eq!(
-            unreadable_metadata_message(Path::new("/podcasts/2024-01-15-Episode.json")),
-            "Could not read episode metadata /podcasts/2024-01-15-Episode.json"
+            unreadable_metadata_message(
+                Path::new("/podcasts/2024-01-15-Episode.json"),
+                "EOF while parsing a string at line 1 column 15"
+            ),
+            "Could not read episode metadata /podcasts/2024-01-15-Episode.json \
+             (EOF while parsing a string at line 1 column 15)"
         );
     }
 
@@ -482,6 +490,7 @@ mod tests {
         });
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
+            error: "EOF while parsing".to_string(),
         });
         reporter.report(ProgressEvent::StoredAudioMismatch {
             episode_title: "Sega Nomad".to_string(),

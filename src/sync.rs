@@ -92,8 +92,11 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         reporter.report(ProgressEvent::PartialFileStuck { path: path.clone() });
     }
 
-    for path in &state.unreadable_metadata {
-        reporter.report(ProgressEvent::MetadataUnreadable { path: path.clone() });
+    for unreadable in &state.unreadable_metadata {
+        reporter.report(ProgressEvent::MetadataUnreadable {
+            path: unreadable.path.clone(),
+            error: unreadable.error.clone(),
+        });
     }
 
     // Create sync plan (episodes are sorted by pub_date, newest first)
