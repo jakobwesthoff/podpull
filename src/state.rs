@@ -21,6 +21,8 @@ pub struct OutputState {
     pub output_dir: PathBuf,
     /// Number of partial files that were cleaned up during scan
     pub partial_files_cleaned: usize,
+    /// Episode metadata files that exist but could not be read or parsed
+    pub unreadable_metadata: Vec<PathBuf>,
 }
 
 /// Plan for synchronization, indicating what needs to be downloaded
@@ -63,6 +65,7 @@ pub fn scan_output_dir(
             existing_files,
             output_dir: output_dir.to_path_buf(),
             partial_files_cleaned,
+            unreadable_metadata: Vec::new(),
         });
     }
 
@@ -117,11 +120,20 @@ pub fn scan_output_dir(
         total_files: total_json_files,
     });
 
+    // An unreadable metadata file hides which episode it belongs to, so that
+    // episode counts as not downloaded. It is collected for reporting rather
+    // than dropped silently, because the user is the only one who can tell
+    // what the file was.
+    let mut unreadable_metadata = Vec::new();
+
     for (index, path) in json_files.into_iter().enumerate() {
-        if let Ok(metadata) = read_episode_metadata(&path)
-            && let Some(guid) = metadata.guid
-        {
-            downloaded_guids.insert(guid);
+        match read_episode_metadata(&path) {
+            Ok(metadata) => {
+                if let Some(guid) = metadata.guid {
+                    downloaded_guids.insert(guid);
+                }
+            }
+            Err(_) => unreadable_metadata.push(path),
         }
 
         reporter.report(ProgressEvent::ScanningDirectory {
@@ -135,6 +147,7 @@ pub fn scan_output_dir(
         existing_files,
         output_dir: output_dir.to_path_buf(),
         partial_files_cleaned,
+        unreadable_metadata,
     })
 }
 
@@ -228,6 +241,17 @@ mod tests {
         }
     }
 
+    /// State of an output directory in which exactly `guids` were downloaded
+    fn state_with_guids(guids: &[&str]) -> OutputState {
+        OutputState {
+            downloaded_guids: guids.iter().map(|guid| guid.to_string()).collect(),
+            existing_files: HashSet::new(),
+            output_dir: PathBuf::from("/tmp"),
+            partial_files_cleaned: 0,
+            unreadable_metadata: Vec::new(),
+        }
+    }
+
     fn make_date(year: i32, month: u32, day: u32) -> DateTime<FixedOffset> {
         Utc.with_ymd_and_hms(year, month, day, 12, 0, 0)
             .unwrap()
@@ -278,6 +302,28 @@ mod tests {
     }
 
     #[test]
+    fn scan_records_unreadable_episode_metadata() {
+        let dir = tempdir().unwrap();
+        let episode = make_episode("Readable", Some("readable-guid"));
+        write_episode_metadata(
+            &episode,
+            "readable.mp3",
+            None,
+            &dir.path().join("readable.json"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("truncated.json"), b"{\"title\": \"Trunc").unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        assert_eq!(
+            state.unreadable_metadata,
+            vec![dir.path().join("truncated.json")]
+        );
+        assert!(state.downloaded_guids.contains("readable-guid"));
+    }
+
+    #[test]
     fn scan_ignores_podcast_json() {
         let dir = tempdir().unwrap();
         std::fs::write(
@@ -296,12 +342,7 @@ mod tests {
 
     #[test]
     fn sync_plan_identifies_new_episodes() {
-        let state = OutputState {
-            downloaded_guids: HashSet::new(),
-            existing_files: HashSet::new(),
-            output_dir: PathBuf::from("/tmp"),
-            partial_files_cleaned: 0,
-        };
+        let state = state_with_guids(&[]);
 
         let episodes = vec![
             make_episode("Ep 1", Some("guid-1")),
@@ -317,15 +358,7 @@ mod tests {
 
     #[test]
     fn sync_plan_skips_downloaded_episodes() {
-        let mut downloaded_guids = HashSet::new();
-        downloaded_guids.insert("guid-1".to_string());
-
-        let state = OutputState {
-            downloaded_guids,
-            existing_files: HashSet::new(),
-            output_dir: PathBuf::from("/tmp"),
-            partial_files_cleaned: 0,
-        };
+        let state = state_with_guids(&["guid-1"]);
 
         let episodes = vec![
             make_episode("Ep 1", Some("guid-1")),
@@ -342,15 +375,7 @@ mod tests {
 
     #[test]
     fn sync_plan_downloads_episodes_without_guid() {
-        let mut downloaded_guids = HashSet::new();
-        downloaded_guids.insert("guid-1".to_string());
-
-        let state = OutputState {
-            downloaded_guids,
-            existing_files: HashSet::new(),
-            output_dir: PathBuf::from("/tmp"),
-            partial_files_cleaned: 0,
-        };
+        let state = state_with_guids(&["guid-1"]);
 
         let episodes = vec![
             make_episode("Ep 1", Some("guid-1")),
@@ -390,12 +415,7 @@ mod tests {
 
     #[test]
     fn sync_plan_sorts_episodes_by_pub_date_newest_first() {
-        let state = OutputState {
-            downloaded_guids: HashSet::new(),
-            existing_files: HashSet::new(),
-            output_dir: PathBuf::from("/tmp"),
-            partial_files_cleaned: 0,
-        };
+        let state = state_with_guids(&[]);
 
         // Create episodes in random order
         let episodes = vec![
@@ -423,12 +443,7 @@ mod tests {
 
     #[test]
     fn sync_plan_places_episodes_without_date_at_end() {
-        let state = OutputState {
-            downloaded_guids: HashSet::new(),
-            existing_files: HashSet::new(),
-            output_dir: PathBuf::from("/tmp"),
-            partial_files_cleaned: 0,
-        };
+        let state = state_with_guids(&[]);
 
         let episodes = vec![
             make_episode_with_date("No Date 1", Some("guid-1"), None),

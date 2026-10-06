@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -30,6 +30,7 @@ static PARTY: Emoji<'_, '_> = Emoji("🎉 ", "[*] ");
 static FOLDER: Emoji<'_, '_> = Emoji("📁 ", "");
 static CROSS: Emoji<'_, '_> = Emoji("✗ ", "x ");
 static BROOM: Emoji<'_, '_> = Emoji("🧹 ", "[c] ");
+static WARNING: Emoji<'_, '_> = Emoji("⚠️  ", "[!] ");
 
 /// Download and synchronize podcasts from RSS feeds
 #[derive(Parser, Debug)]
@@ -262,6 +263,15 @@ impl ProgressReporter for IndicatifReporter {
                 }
             }
 
+            ProgressEvent::MetadataUnreadable { path } => {
+                // Printed above the progress bars so the warning outlives
+                // the transient status line.
+                let _ = self.multi.println(format!(
+                    "{WARNING}{}",
+                    unreadable_metadata_message(&path).yellow()
+                ));
+            }
+
             ProgressEvent::SyncCompleted {
                 downloaded_count,
                 existing_count,
@@ -293,6 +303,10 @@ impl ProgressReporter for IndicatifReporter {
             }
         }
     }
+}
+
+fn unreadable_metadata_message(path: &Path) -> String {
+    format!("Could not read episode metadata {}", path.display())
 }
 
 fn truncate_title(title: &str, max_len: usize) -> String {
@@ -375,4 +389,17 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreadable_metadata_message_names_the_file() {
+        assert_eq!(
+            unreadable_metadata_message(Path::new("/podcasts/2024-01-15-Episode.json")),
+            "Could not read episode metadata /podcasts/2024-01-15-Episode.json"
+        );
+    }
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Episode metadata files that cannot be read are now reported as a warning instead of being skipped silently
+
 ## [1.1.2] - 2026-02-01
 
 ### Changed

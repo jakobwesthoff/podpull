@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Events emitted during podcast synchronization for progress reporting
@@ -89,6 +90,9 @@ pub enum ProgressEvent {
 
     /// Partial files were cleaned up during directory scan
     PartialFilesCleanedUp { count: usize },
+
+    /// An episode metadata file in the output directory could not be read
+    MetadataUnreadable { path: PathBuf },
 
     /// Sync operation completed
     SyncCompleted {
@@ -198,6 +202,10 @@ mod tests {
         });
 
         reporter.report(ProgressEvent::PartialFilesCleanedUp { count: 2 });
+
+        reporter.report(ProgressEvent::MetadataUnreadable {
+            path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
+        });
 
         reporter.report(ProgressEvent::SyncCompleted {
             downloaded_count: 4,

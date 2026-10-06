@@ -105,6 +105,10 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
+    for path in &state.unreadable_metadata {
+        reporter.report(ProgressEvent::MetadataUnreadable { path: path.clone() });
+    }
+
     // Create sync plan (episodes are sorted by pub_date, newest first)
     let plan = create_sync_plan(podcast.episodes.clone(), &state);
 
@@ -278,10 +282,28 @@ mod tests {
     use super::*;
 
     use crate::http::{ByteStream, HttpResponse};
-    use crate::progress::NoopReporter;
+    use crate::progress::{NoopReporter, ProgressReporter};
     use async_trait::async_trait;
     use bytes::Bytes;
     use tempfile::tempdir;
+
+    /// Collects every reported event so tests can assert on warnings
+    #[derive(Default)]
+    struct RecordingReporter {
+        events: std::sync::Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl ProgressReporter for RecordingReporter {
+        fn report(&self, event: ProgressEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    impl RecordingReporter {
+        fn events(&self) -> Vec<ProgressEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
 
     #[derive(Clone)]
     struct MockHttpClient {
@@ -419,5 +441,38 @@ mod tests {
 
         assert_eq!(result.downloaded, 0);
         assert_eq!(result.skipped, 2);
+    }
+
+    #[tokio::test]
+    async fn sync_reports_unreadable_episode_metadata() {
+        let dir = tempdir().unwrap();
+        let truncated = dir.path().join("2024-01-15-Episode 9.json");
+        std::fs::write(&truncated, b"{\"title\": \"Epis").unwrap();
+
+        let client = MockHttpClient {
+            feed_xml: SAMPLE_FEED.to_string(),
+            audio_data: b"fake audio".to_vec(),
+        };
+        let reporter = Arc::new(RecordingReporter::default());
+
+        sync_podcast(
+            &client,
+            "https://example.com/feed.xml",
+            dir.path(),
+            &SyncOptions::default(),
+            reporter.clone(),
+        )
+        .await
+        .unwrap();
+
+        let reported: Vec<_> = reporter
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                ProgressEvent::MetadataUnreadable { path, .. } => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reported, vec![truncated]);
     }
 }
