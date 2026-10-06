@@ -34,6 +34,16 @@ pub struct DownloadResult {
     pub content_hash: String,
 }
 
+/// Hash a file in the format [`DownloadResult::content_hash`] uses
+///
+/// Reads the whole file, so on a network share it costs a full transfer.
+pub fn hash_file(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
 /// Download an episode to the specified output path
 ///
 /// Streams the response body to disk while computing a SHA-256 hash.
@@ -324,5 +334,41 @@ mod tests {
             b"bytes of another download"
         );
         assert!(!output_path.exists());
+    }
+
+    #[tokio::test]
+    async fn hash_file_matches_hash_recorded_by_download() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+        let client = MockHttpClient {
+            response_data: b"test audio content".to_vec(),
+            status: 200,
+        };
+        let context = DownloadContext {
+            download_id: 0,
+            episode_index: 0,
+            total_to_download: 1,
+        };
+
+        let result = download_episode(
+            &client,
+            &make_episode(),
+            &output_path,
+            &context,
+            &NoopReporter::shared(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hash_file(&output_path).unwrap(), result.content_hash);
+    }
+
+    #[test]
+    fn hash_file_fails_for_missing_file() {
+        let dir = tempdir().unwrap();
+
+        let result = hash_file(&dir.path().join("missing.mp3"));
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 }

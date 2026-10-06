@@ -5,7 +5,7 @@
 mod download;
 mod filename;
 
-pub use download::{DownloadContext, DownloadResult, download_episode};
+pub use download::{DownloadContext, DownloadResult, download_episode, hash_file};
 pub use filename::{
     filename_claim_key, generate_filename, generate_filename_stem, generate_unique_filename_stem,
     get_audio_extension,

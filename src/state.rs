@@ -2,10 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::episode::{filename_claim_key, generate_unique_filename_stem, get_audio_extension};
+use crate::episode::{
+    filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
+};
 use crate::error::StateError;
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
@@ -27,6 +29,18 @@ pub struct OutputState {
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
     /// the output directory, which new downloads must not reuse
     pub claimed_stems: HashSet<String>,
+    /// Episodes with readable metadata, keyed by the claim key of their stem
+    pub stored_episodes: HashMap<String, StoredEpisode>,
+}
+
+/// An episode downloaded by an earlier run, as its metadata records it
+#[derive(Debug, Clone)]
+pub struct StoredEpisode {
+    pub title: String,
+    /// Name of the audio file, spelled the way the directory lists it
+    pub audio_filename: String,
+    /// Hash of the audio as downloaded, if the metadata records one
+    pub content_hash: Option<String>,
 }
 
 /// An episode scheduled for download, with the files it is written to
@@ -37,6 +51,9 @@ pub struct PlannedDownload {
     pub audio_filename: String,
     /// Name of the episode metadata file inside the output directory
     pub metadata_filename: String,
+    /// Key in [`OutputState::stored_episodes`] of the episode that already
+    /// occupies this episode's base filename, if any
+    pub collides_with: Option<String>,
 }
 
 /// Plan for synchronization, indicating what needs to be downloaded
@@ -81,6 +98,7 @@ pub fn scan_output_dir(
             partial_files_cleaned,
             unreadable_metadata: Vec::new(),
             claimed_stems: HashSet::new(),
+            stored_episodes: HashMap::new(),
         });
     }
 
@@ -151,10 +169,34 @@ pub fn scan_output_dir(
     // than dropped silently, because the user is the only one who can tell
     // what the file was.
     let mut unreadable_metadata = Vec::new();
+    let mut stored_episodes = HashMap::new();
 
     for (index, path) in json_files.into_iter().enumerate() {
         match read_episode_metadata(&path) {
             Ok(metadata) => {
+                // The metadata records the audio name podpull asked for, but
+                // a share may list it in another Unicode normalization. The
+                // audio was written under the same stem as the metadata, so
+                // the listed metadata stem plus the recorded extension is
+                // how the directory spells the audio name.
+                let stem = path
+                    .file_stem()
+                    .expect("metadata paths come from names ending in .json")
+                    .to_string_lossy()
+                    .into_owned();
+                let audio_filename = match Path::new(&metadata.audio_filename).extension() {
+                    Some(ext) => format!("{}.{}", stem, ext.to_string_lossy()),
+                    None => stem.clone(),
+                };
+                stored_episodes.insert(
+                    filename_claim_key(&stem),
+                    StoredEpisode {
+                        title: metadata.title,
+                        audio_filename,
+                        content_hash: metadata.content_hash,
+                    },
+                );
+
                 if let Some(guid) = metadata.guid {
                     downloaded_guids.insert(guid);
                 }
@@ -175,6 +217,7 @@ pub fn scan_output_dir(
         partial_files_cleaned,
         unreadable_metadata,
         claimed_stems,
+        stored_episodes,
     })
 }
 
@@ -221,9 +264,18 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
     let to_download = to_download
         .into_iter()
         .map(|episode| {
+            // An earlier download under the base name is what a collision
+            // points at; it gets checked for damage before the sync starts.
+            let base_key = filename_claim_key(&generate_filename_stem(&episode));
+            let collides_with = state
+                .stored_episodes
+                .contains_key(&base_key)
+                .then_some(base_key);
+
             let stem = generate_unique_filename_stem(&episode, &claimed_stems);
             claimed_stems.insert(filename_claim_key(&stem));
             PlannedDownload {
+                collides_with,
                 audio_filename: format!("{}.{}", stem, get_audio_extension(&episode)),
                 metadata_filename: format!("{}.json", stem),
                 episode,
@@ -295,6 +347,7 @@ mod tests {
             partial_files_cleaned: 0,
             unreadable_metadata: Vec::new(),
             claimed_stems: HashSet::new(),
+            stored_episodes: HashMap::new(),
         }
     }
 
@@ -402,6 +455,47 @@ mod tests {
         .map(|stem| filename_claim_key(stem))
         .collect();
         assert_eq!(state.claimed_stems, expected);
+    }
+
+    #[test]
+    fn scan_indexes_stored_episodes_by_claim_key_of_their_stem() {
+        let dir = tempdir().unwrap();
+        // The metadata records the composed name podpull asked for, while
+        // the directory lists the decomposed one the share stored.
+        let listed_stem = "2019-12-27-Neuzuga\u{0308}nge #4";
+        write_episode_metadata(
+            &make_episode("Neuzug\u{00e4}nge #4", Some("guid-1")),
+            "2019-12-27-Neuzug\u{00e4}nge #4.mp3",
+            Some("sha256:abc".to_string()),
+            &dir.path().join(format!("{}.json", listed_stem)),
+        )
+        .unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        let stored = &state.stored_episodes[&filename_claim_key("2019-12-27-Neuzug\u{00e4}nge #4")];
+        assert_eq!(stored.title, "Neuzug\u{00e4}nge #4");
+        assert_eq!(stored.audio_filename, format!("{}.mp3", listed_stem));
+        assert_eq!(stored.content_hash.as_deref(), Some("sha256:abc"));
+    }
+
+    #[test]
+    fn scan_indexes_stored_episode_whose_audio_has_no_extension() {
+        let dir = tempdir().unwrap();
+        write_episode_metadata(
+            &make_episode("Bare", Some("guid-1")),
+            "2024-01-15-Bare",
+            None,
+            &dir.path().join("2024-01-15-Bare.json"),
+        )
+        .unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        assert_eq!(
+            state.stored_episodes[&filename_claim_key("2024-01-15-Bare")].audio_filename,
+            "2024-01-15-Bare"
+        );
     }
 
     #[test]
@@ -546,6 +640,70 @@ mod tests {
         assert_eq!(
             plan.to_download[0].audio_filename,
             "2024-12-19-102522-Sega Nomad.mp3"
+        );
+    }
+
+    #[test]
+    fn sync_plan_points_disk_collisions_at_the_stored_episode() {
+        let mut state = state_with_guids(&["guid-stored"]);
+        let key = filename_claim_key("2024-12-19-Sega Nomad");
+        state.claimed_stems.insert(key.clone());
+        state.stored_episodes.insert(
+            key.clone(),
+            StoredEpisode {
+                title: "Sega Nomad".to_string(),
+                audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+                content_hash: None,
+            },
+        );
+        let newer = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-newer"),
+            make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
+        );
+        let older = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-older"),
+            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
+        );
+        let unrelated = make_episode_with_date(
+            "Other",
+            Some("guid-other"),
+            make_time("Thu, 19 Dec 2024 08:00:00 +0000"),
+        );
+
+        let plan = create_sync_plan(vec![older, newer, unrelated], &state);
+
+        let collisions: Vec<_> = plan
+            .to_download
+            .iter()
+            .map(|planned| planned.collides_with.as_deref())
+            .collect();
+        assert_eq!(
+            collisions,
+            vec![Some(key.as_str()), Some(key.as_str()), None]
+        );
+    }
+
+    #[test]
+    fn sync_plan_does_not_point_collisions_within_the_run_at_stored_episodes() {
+        let older = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-older"),
+            make_time("Thu, 19 Dec 2024 10:25:22 +0000"),
+        );
+        let newer = make_episode_with_date(
+            "Sega Nomad",
+            Some("guid-newer"),
+            make_time("Thu, 19 Dec 2024 10:45:35 +0000"),
+        );
+
+        let plan = create_sync_plan(vec![older, newer], &state_with_guids(&[]));
+
+        assert!(
+            plan.to_download
+                .iter()
+                .all(|planned| planned.collides_with.is_none())
         );
     }
 

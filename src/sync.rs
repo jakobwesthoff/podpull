@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,13 +11,13 @@ use tokio::sync::Mutex;
 
 use url::Url;
 
-use crate::episode::{DownloadContext, download_episode};
+use crate::episode::{DownloadContext, download_episode, hash_file};
 use crate::error::{FeedError, SyncError};
 use crate::feed::{fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file};
 use crate::http::HttpClient;
 use crate::metadata::{write_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
-use crate::state::{create_sync_plan, scan_output_dir};
+use crate::state::{OutputState, PlannedDownload, create_sync_plan, scan_output_dir};
 
 /// Options for podcast synchronization
 #[derive(Debug, Clone)]
@@ -152,6 +153,8 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
+    let verification_failures = verify_collided_audio(&to_download, &state, &reporter).await;
+
     // Download episodes in parallel using a slot pool
     // The slot pool serves dual purpose: limits concurrency AND provides stable slot IDs
     let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(options.max_concurrent);
@@ -161,8 +164,8 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let slot_rx = Arc::new(Mutex::new(slot_rx));
 
     let downloaded_count = Arc::new(AtomicUsize::new(0));
-    let failed_count = Arc::new(AtomicUsize::new(0));
-    let failed_episodes = Arc::new(Mutex::new(Vec::new()));
+    let failed_count = Arc::new(AtomicUsize::new(verification_failures.len()));
+    let failed_episodes = Arc::new(Mutex::new(verification_failures));
 
     let output_dir = output_dir.to_path_buf();
     let client = client.clone();
@@ -272,6 +275,58 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         failed,
         failed_episodes: failed_eps,
     })
+}
+
+/// Check the audio files that planned downloads collide with
+///
+/// podpull 1.1.2 and earlier downloaded episodes sharing a filename into one
+/// file at the same time, leaving bytes of both behind. Such a file no longer
+/// matches the hash its metadata recorded. A mismatch is reported, never
+/// repaired, because tags edited by the user cause one as well. Returns the
+/// mismatches as (episode title, message) pairs for the failure summary.
+async fn verify_collided_audio(
+    to_download: &[PlannedDownload],
+    state: &OutputState,
+    reporter: &SharedProgressReporter,
+) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    let mut verified = HashSet::new();
+
+    for key in to_download
+        .iter()
+        .filter_map(|planned| planned.collides_with.as_ref())
+    {
+        if !verified.insert(key) {
+            continue;
+        }
+        let stored = &state.stored_episodes[key];
+        let Some(recorded_hash) = &stored.content_hash else {
+            continue;
+        };
+
+        let audio_path = state.output_dir.join(&stored.audio_filename);
+        let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
+            .await
+            .expect("hashing a file does not panic");
+
+        // A missing or unreadable file has nothing left to verify.
+        if actual_hash.is_ok_and(|hash| &hash != recorded_hash) {
+            reporter.report(ProgressEvent::StoredAudioMismatch {
+                episode_title: stored.title.clone(),
+                audio_filename: stored.audio_filename.clone(),
+            });
+            failures.push((
+                stored.title.clone(),
+                format!(
+                    "Audio file {} does not match the hash recorded when it was downloaded. \
+                     Delete it and its .json file to download it again.",
+                    stored.audio_filename
+                ),
+            ));
+        }
+    }
+
+    failures
 }
 
 #[cfg(test)]
@@ -791,5 +846,126 @@ mod tests {
             recorded["nomad-after-migration"],
             "2024-12-19-102522-SFT Bits Sega Nomad.mp3"
         );
+    }
+
+    // =========================================================
+    // Verification of audio a collision points at
+    // =========================================================
+
+    const NOMAD_STEM: &str = "2024-12-19-SFT Bits Sega Nomad";
+
+    async fn sync_recording(dir: &Path, items: &[FeedItem]) -> (SyncResult, Vec<ProgressEvent>) {
+        let reporter = Arc::new(RecordingReporter::default());
+        let result = sync_podcast(
+            &client_for(items),
+            "https://example.com/feed.xml",
+            dir,
+            &SyncOptions::default(),
+            reporter.clone(),
+        )
+        .await
+        .unwrap();
+        (result, reporter.events())
+    }
+
+    fn mismatch_events(events: &[ProgressEvent]) -> Vec<(String, String)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                ProgressEvent::StoredAudioMismatch {
+                    episode_title,
+                    audio_filename,
+                } => Some((episode_title.clone(), audio_filename.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sync_reports_damaged_audio_of_colliding_episode() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+
+        // Two concurrent downloads into one file, as podpull 1.1.2 and
+        // earlier did for colliding episodes, leave bytes that no longer
+        // match the hash recorded by either download.
+        let audio = dir.path().join(format!("{}.mp3", NOMAD_STEM));
+        std::fs::write(&audio, b"interleaved audio").unwrap();
+
+        let (result, events) = sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL]).await;
+
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.failed_episodes.len(), 1);
+        let (title, message) = &result.failed_episodes[0];
+        assert_eq!(title, "SFT Bits: Sega Nomad");
+        assert!(message.contains("2024-12-19-SFT Bits Sega Nomad.mp3"));
+        assert_eq!(
+            mismatch_events(&events),
+            vec![(
+                "SFT Bits: Sega Nomad".to_string(),
+                "2024-12-19-SFT Bits Sega Nomad.mp3".to_string()
+            )]
+        );
+        // Reporting only: the file may hold edits made by the user.
+        assert_eq!(std::fs::read(&audio).unwrap(), b"interleaved audio");
+    }
+
+    #[tokio::test]
+    async fn sync_accepts_intact_audio_of_colliding_episode() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+
+        let (result, events) = sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL]).await;
+
+        assert_eq!(result.failed, 0);
+        assert!(mismatch_events(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_verifies_audio_once_when_several_episodes_collide_with_it() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        std::fs::write(dir.path().join(format!("{}.mp3", NOMAD_STEM)), b"damaged").unwrap();
+        let third = FeedItem {
+            pub_date: "Thu, 19 Dec 2024 09:00:00 GMT",
+            guid: "nomad-third",
+            ..NOMAD_ORIGINAL
+        };
+
+        let (result, events) =
+            sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL, third]).await;
+
+        assert_eq!(result.downloaded, 2);
+        assert_eq!(result.failed, 1);
+        assert_eq!(mismatch_events(&events).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_skips_verification_without_recorded_hash() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        let metadata_path = dir.path().join(format!("{}.json", NOMAD_STEM));
+        let mut metadata = crate::metadata::read_episode_metadata(&metadata_path).unwrap();
+        metadata.content_hash = None;
+        std::fs::write(&metadata_path, serde_json::to_string(&metadata).unwrap()).unwrap();
+        std::fs::write(dir.path().join(format!("{}.mp3", NOMAD_STEM)), b"edited").unwrap();
+
+        let (result, events) = sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL]).await;
+
+        assert_eq!(result.failed, 0);
+        assert!(mismatch_events(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_skips_verification_when_audio_is_missing() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        std::fs::remove_file(dir.path().join(format!("{}.mp3", NOMAD_STEM))).unwrap();
+
+        let (result, events) = sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL]).await;
+
+        assert_eq!(result.failed, 0);
+        assert!(mismatch_events(&events).is_empty());
     }
 }

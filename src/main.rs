@@ -272,6 +272,16 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
+            ProgressEvent::StoredAudioMismatch {
+                episode_title,
+                audio_filename,
+            } => {
+                let _ = self.multi.println(format!(
+                    "{WARNING}{}",
+                    stored_audio_mismatch_message(&episode_title, &audio_filename).yellow()
+                ));
+            }
+
             ProgressEvent::SyncCompleted {
                 downloaded_count,
                 existing_count,
@@ -307,6 +317,13 @@ impl ProgressReporter for IndicatifReporter {
 
 fn unreadable_metadata_message(path: &Path) -> String {
     format!("Could not read episode metadata {}", path.display())
+}
+
+fn stored_audio_mismatch_message(episode_title: &str, audio_filename: &str) -> String {
+    format!(
+        "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded",
+        episode_title, audio_filename
+    )
 }
 
 fn truncate_title(title: &str, max_len: usize) -> String {
@@ -400,6 +417,15 @@ mod tests {
         assert_eq!(
             unreadable_metadata_message(Path::new("/podcasts/2024-01-15-Episode.json")),
             "Could not read episode metadata /podcasts/2024-01-15-Episode.json"
+        );
+    }
+
+    #[test]
+    fn stored_audio_mismatch_message_names_episode_and_file() {
+        assert_eq!(
+            stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
+             the hash recorded when it was downloaded"
         );
     }
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- When a new episode would take the name of an existing file, that file is checked against the hash recorded when it was downloaded. A mismatch is listed among the failed episodes. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch; delete the reported audio file and its `.json` file to download the episode again
+
 ### Fixed
 
 - Episodes that share a title and publication date no longer overwrite each other or get downloaded again on every sync. One keeps the usual filename; the other gets its publication time added, for example `2024-12-19-102522-SFT Bits Sega Nomad.mp3`

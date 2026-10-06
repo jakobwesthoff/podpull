@@ -94,6 +94,13 @@ pub enum ProgressEvent {
     /// An episode metadata file in the output directory could not be read
     MetadataUnreadable { path: PathBuf },
 
+    /// An existing audio file that a new episode collided with no longer
+    /// matches the hash recorded when it was downloaded
+    StoredAudioMismatch {
+        episode_title: String,
+        audio_filename: String,
+    },
+
     /// Sync operation completed
     SyncCompleted {
         downloaded_count: usize,
@@ -205,6 +212,11 @@ mod tests {
 
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
+        });
+
+        reporter.report(ProgressEvent::StoredAudioMismatch {
+            episode_title: "Episode 1".to_string(),
+            audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
         });
 
         reporter.report(ProgressEvent::SyncCompleted {
