@@ -30,6 +30,8 @@ pub struct OutputState {
     stored_episodes: HashMap<String, StoredEpisode>,
     /// GUIDs recorded by `stored_episodes`, for fast lookup
     downloaded_guids: HashSet<String>,
+    /// Claim key of a stored episode per recorded content hash
+    claim_keys_by_content_hash: HashMap<String, String>,
 }
 
 impl OutputState {
@@ -46,6 +48,20 @@ impl OutputState {
             .flat_map(|stored| stored.guid.iter().chain(&stored.additional_guids))
             .cloned()
             .collect();
+
+        // Copies of one audio share a hash; the first by audio filename
+        // stands for them, independent of the order the scan found them in.
+        let mut by_filename: Vec<_> = stored_episodes.iter().collect();
+        by_filename.sort_by(|(_, a), (_, b)| a.audio_filename.cmp(&b.audio_filename));
+        let mut claim_keys_by_content_hash = HashMap::new();
+        for (claim_key, stored) in by_filename {
+            if let Some(hash) = &stored.content_hash {
+                claim_keys_by_content_hash
+                    .entry(hash.clone())
+                    .or_insert_with(|| claim_key.clone());
+            }
+        }
+
         Self {
             output_dir: output_dir.to_path_buf(),
             partial_files_cleaned,
@@ -54,7 +70,21 @@ impl OutputState {
             claimed_stems,
             stored_episodes,
             downloaded_guids,
+            claim_keys_by_content_hash,
         }
+    }
+
+    /// State of an empty output directory
+    #[cfg(test)]
+    pub(crate) fn empty(output_dir: &Path) -> Self {
+        Self::new(
+            output_dir,
+            0,
+            Vec::new(),
+            Vec::new(),
+            HashSet::new(),
+            HashMap::new(),
+        )
     }
 
     pub fn output_dir(&self) -> &Path {
@@ -91,6 +121,13 @@ impl OutputState {
     /// The episode with readable metadata whose stem has this claim key
     pub fn stored_episode(&self, claim_key: &str) -> Option<&StoredEpisode> {
         self.stored_episodes.get(claim_key)
+    }
+
+    /// The stored episode whose metadata records this content hash
+    pub fn stored_episode_with_content_hash(&self, content_hash: &str) -> Option<&StoredEpisode> {
+        self.claim_keys_by_content_hash
+            .get(content_hash)
+            .and_then(|claim_key| self.stored_episodes.get(claim_key))
     }
 
     /// All episodes with readable metadata
@@ -883,6 +920,32 @@ mod tests {
 
         assert!(state.is_downloaded("old-guid"));
         assert!(state.is_downloaded("new-guid"));
+    }
+
+    #[test]
+    fn state_finds_stored_episode_by_content_hash() {
+        let with_hash = |stem: &str, guid: &str| StoredEpisode {
+            content_hash: Some("sha256:same".to_string()),
+            ..stored(stem, "Episode", guid)
+        };
+        let state = state_with_stored(vec![
+            with_hash("2024-01-02-Copy", "guid-copy"),
+            with_hash("2024-01-01-Original", "guid-original"),
+        ]);
+
+        // With several copies of the same audio, the first by name answers,
+        // so the result does not depend on the order of the scan.
+        assert_eq!(
+            state
+                .stored_episode_with_content_hash("sha256:same")
+                .map(|stored| stored.audio_filename.as_str()),
+            Some("2024-01-01-Original.mp3")
+        );
+        assert!(
+            state
+                .stored_episode_with_content_hash("sha256:other")
+                .is_none()
+        );
     }
 
     #[test]

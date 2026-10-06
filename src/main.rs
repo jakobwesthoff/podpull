@@ -267,6 +267,19 @@ impl ProgressReporter for IndicatifReporter {
                 }
             }
 
+            ProgressEvent::EpisodeAlreadyStored {
+                download_id,
+                episode_title,
+                audio_filename,
+            } => {
+                let bar = self.get_or_create_bar(download_id);
+                bar.set_message(format!(
+                    "{SUCCESS}{}",
+                    already_stored_message(&episode_title, &audio_filename).green()
+                ));
+                self.finish_bar(download_id);
+            }
+
             ProgressEvent::PartialFileStuck { path } => {
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
@@ -316,6 +329,7 @@ impl ProgressReporter for IndicatifReporter {
                 failed_count,
                 not_started_count,
                 damaged_count,
+                adopted_count,
             } => {
                 self.main_bar.finish_and_clear();
 
@@ -323,6 +337,13 @@ impl ProgressReporter for IndicatifReporter {
                     format!("{} downloaded", downloaded_count.to_string().green().bold()),
                     format!("{} existing", existing_count.to_string().yellow()),
                 ];
+
+                if adopted_count > 0 {
+                    parts.push(format!(
+                        "{} already stored",
+                        adopted_count.to_string().yellow()
+                    ));
+                }
 
                 if limited_count > 0 {
                     parts.push(format!("{} limited", limited_count.to_string().cyan()));
@@ -359,6 +380,13 @@ impl ProgressReporter for IndicatifReporter {
             _ => {}
         }
     }
+}
+
+fn already_stored_message(episode_title: &str, audio_filename: &str) -> String {
+    format!(
+        "\"{}\" is identical to {}; recorded its GUID there",
+        episode_title, audio_filename
+    )
 }
 
 fn plan_message(
@@ -643,6 +671,11 @@ mod tests {
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
             remedy: DamageRemedy::Repairing,
         });
+        reporter.report(ProgressEvent::EpisodeAlreadyStored {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+        });
     }
 
     fn damage(remedy: DamageRemedy) -> String {
@@ -681,6 +714,14 @@ mod tests {
             "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
              the hash recorded when it was downloaded; the feed now offers another \
              audio format, so delete it and its .json file to download it again"
+        );
+    }
+
+    #[test]
+    fn already_stored_message_names_episode_and_file() {
+        assert_eq!(
+            already_stored_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
+            "\"Sega Nomad\" is identical to 2024-12-19-Sega Nomad.mp3; recorded its GUID there"
         );
     }
 

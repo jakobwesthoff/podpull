@@ -18,10 +18,13 @@ use crate::feed::{
     Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
 };
 use crate::http::HttpClient;
-use crate::metadata::{stage_episode_metadata, write_podcast_metadata};
+use crate::metadata::{
+    add_guid_to_episode_metadata, stage_episode_metadata, write_podcast_metadata,
+};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 use crate::state::{
-    CheckTarget, PlannedDownload, archive_check_targets, create_sync_plan, scan_output_dir,
+    CheckTarget, OutputState, PlannedDownload, StoredEpisode, archive_check_targets,
+    create_sync_plan, scan_output_dir,
 };
 
 /// Options for podcast synchronization
@@ -103,6 +106,9 @@ pub struct SyncResult {
     pub not_started: usize,
     /// Stored audio found not to match its recorded hash and left as it is
     pub damaged: Vec<DamagedAudio>,
+    /// Number of new episodes whose audio was already stored byte for byte,
+    /// so only their GUID was recorded
+    pub adopted: usize,
 }
 
 /// What happens with stored audio that no longer matches its recorded hash
@@ -224,7 +230,7 @@ pub async fn sync_podcast<C: HttpClient>(
     // Write podcast metadata
     write_podcast_metadata(&podcast, output_dir)?;
 
-    let totals = download_all(client, to_download, output_dir, &reporter, options).await;
+    let totals = download_all(client, to_download, &state, &reporter, options).await;
     let downloaded = totals.downloaded;
     let failed_eps = totals.failed_episodes;
     let failed = failed_eps.len();
@@ -236,6 +242,7 @@ pub async fn sync_podcast<C: HttpClient>(
         failed_count: failed,
         not_started_count: totals.not_started,
         damaged_count: verification.damaged.len(),
+        adopted_count: totals.adopted,
     });
 
     if downloaded == 0 && failed > 0 && !options.continue_on_error {
@@ -249,6 +256,7 @@ pub async fn sync_podcast<C: HttpClient>(
         failed_episodes: failed_eps,
         not_started: totals.not_started,
         damaged: verification.damaged,
+        adopted: totals.adopted,
     })
 }
 
@@ -284,6 +292,8 @@ async fn load_podcast<C: HttpClient>(
 /// What became of one planned download
 enum DownloadOutcome {
     Downloaded,
+    /// The audio was already stored, so only its GUID was recorded
+    AlreadyStored,
     Failed {
         error: String,
     },
@@ -298,6 +308,8 @@ struct DownloadTotals {
     failed_episodes: Vec<(String, String)>,
     /// Episodes skipped because a failure stopped the run
     not_started: usize,
+    /// Episodes whose audio was already stored byte for byte
+    adopted: usize,
 }
 
 /// A download slot ID taken from the free list, returned when dropped
@@ -343,7 +355,7 @@ impl Drop for SlotGuard<'_> {
 async fn download_all<C: HttpClient>(
     client: &C,
     to_download: Vec<PlannedDownload>,
-    output_dir: &Path,
+    state: &OutputState,
     reporter: &SharedProgressReporter,
     options: &SyncOptions,
 ) -> DownloadTotals {
@@ -374,13 +386,16 @@ async fn download_all<C: HttpClient>(
                         total_to_download,
                     };
                     let attempt = AssertUnwindSafe(download_planned(
-                        client, &planned, output_dir, &context, reporter,
+                        client, &planned, state, &context, reporter,
                     ))
                     .catch_unwind()
                     .await;
 
                     let error = match attempt {
-                        Ok(Ok(())) => return (title, DownloadOutcome::Downloaded),
+                        Ok(Ok(Placed::Downloaded)) => return (title, DownloadOutcome::Downloaded),
+                        Ok(Ok(Placed::AlreadyStored)) => {
+                            return (title, DownloadOutcome::AlreadyStored);
+                        }
                         Ok(Err(error)) => {
                             reporter.report(ProgressEvent::DownloadFailed {
                                 download_id: slot.download_id,
@@ -405,10 +420,12 @@ async fn download_all<C: HttpClient>(
         downloaded: 0,
         failed_episodes: Vec::new(),
         not_started: 0,
+        adopted: 0,
     };
     for (title, outcome) in outcomes {
         match outcome {
             DownloadOutcome::Downloaded => totals.downloaded += 1,
+            DownloadOutcome::AlreadyStored => totals.adopted += 1,
             DownloadOutcome::Failed { error } => totals.failed_episodes.push((title, error)),
             DownloadOutcome::NotStarted => totals.not_started += 1,
         }
@@ -435,11 +452,12 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
 async fn download_planned<C: HttpClient>(
     client: &C,
     planned: &PlannedDownload,
-    output_dir: &Path,
+    state: &OutputState,
     context: &DownloadContext,
     reporter: &SharedProgressReporter,
-) -> Result<(), String> {
+) -> Result<Placed, String> {
     let episode = &planned.episode;
+    let output_dir = state.output_dir();
     let audio_filename = planned.audio_filename();
     let audio_path = output_dir.join(&audio_filename);
     let metadata_path = output_dir.join(planned.metadata_filename());
@@ -447,6 +465,25 @@ async fn download_planned<C: HttpClient>(
     let staged_audio = stage_download(client, episode, &audio_path, context, reporter)
         .await
         .map_err(|e| e.to_string())?;
+
+    // A new GUID for audio stored byte for byte, as when a feed re-issues
+    // its episodes, adds that GUID to the stored episode instead of a copy.
+    // A repair is excluded: it is meant to replace its file.
+    if !planned.replaces_existing
+        && let Some(guid) = &episode.guid
+        && let Some(stored) = state.stored_episode_with_content_hash(staged_audio.content_hash())
+        && stored_audio_still_matches(output_dir, stored, staged_audio.content_hash()).await
+    {
+        staged_audio.discard().await;
+        add_guid_to_episode_metadata(&output_dir.join(&stored.metadata_filename), guid)
+            .map_err(|e| format!("Failed to record the GUID of identical audio: {}", e))?;
+        reporter.report(ProgressEvent::EpisodeAlreadyStored {
+            download_id: context.download_id,
+            episode_title: episode.title.clone(),
+            audio_filename: stored.audio_filename.clone(),
+        });
+        return Ok(Placed::AlreadyStored);
+    }
 
     let staged_metadata = match stage_episode_metadata(
         episode,
@@ -492,7 +529,31 @@ async fn download_planned<C: HttpClient>(
         episode_title: episode.title.clone(),
         bytes_downloaded: staged_audio.bytes_downloaded(),
     });
-    Ok(())
+    Ok(Placed::Downloaded)
+}
+
+/// Where a successful download ended up
+enum Placed {
+    Downloaded,
+    /// Identical to stored audio, which now also carries the episode's GUID
+    AlreadyStored,
+}
+
+/// Whether the stored audio still holds the bytes its metadata recorded
+///
+/// The recorded hash describes the file as downloaded. A file changed since
+/// must not take over a new download's identity, or the intact copy would
+/// be thrown away.
+async fn stored_audio_still_matches(
+    output_dir: &Path,
+    stored: &StoredEpisode,
+    content_hash: &str,
+) -> bool {
+    let audio_path = output_dir.join(&stored.audio_filename);
+    let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
+        .await
+        .expect("hashing a file does not panic");
+    actual_hash.is_ok_and(|hash| hash == content_hash)
 }
 
 /// Outcome of checking stored audio against its recorded hashes
@@ -866,6 +927,28 @@ mod tests {
         )
     }
 
+    /// Serves different audio for every enclosure URL, as distinct
+    /// episodes have, so identical-audio detection does not merge them
+    struct DistinctAudioClient(MockHttpClient);
+
+    #[async_trait]
+    impl HttpClient for DistinctAudioClient {
+        async fn get_bytes(&self, url: &str) -> Result<Bytes, reqwest::Error> {
+            self.0.get_bytes(url).await
+        }
+
+        async fn get_stream(&self, url: &str) -> Result<HttpResponse, reqwest::Error> {
+            let data = Bytes::from(format!("audio of {}", url));
+            let len = data.len() as u64;
+            let stream: ByteStream = Box::pin(futures::stream::once(async move { Ok(data) }));
+            Ok(HttpResponse {
+                status: 200,
+                content_length: Some(len),
+                body: stream,
+            })
+        }
+    }
+
     fn client_for(items: &[FeedItem]) -> MockHttpClient {
         MockHttpClient {
             feed_xml: feed_xml(items),
@@ -873,7 +956,7 @@ mod tests {
         }
     }
 
-    async fn sync_with(dir: &Path, client: &MockHttpClient, options: &SyncOptions) -> SyncResult {
+    async fn sync_with<C: HttpClient>(dir: &Path, client: &C, options: &SyncOptions) -> SyncResult {
         sync_podcast(
             client,
             "https://example.com/feed.xml",
@@ -968,7 +1051,7 @@ mod tests {
     #[tokio::test]
     async fn sync_does_not_overwrite_colliding_episode_from_earlier_run() {
         let dir = tempdir().unwrap();
-        let client = client_for(&[NOMAD_REUPLOAD, NOMAD_ORIGINAL]);
+        let client = DistinctAudioClient(client_for(&[NOMAD_REUPLOAD, NOMAD_ORIGINAL]));
 
         // The first run only fetches the newer episode, so the older one
         // meets an already occupied filename on the second run.
@@ -1708,11 +1791,12 @@ mod tests {
         download_planned(
             &client_for(&[NOMAD_ORIGINAL]),
             planned,
-            dir,
+            &OutputState::empty(dir),
             &context,
             &NoopReporter::shared(),
         )
         .await
+        .map(|_| ())
     }
 
     /// Make renaming onto the metadata path fail: a non-empty directory
@@ -1984,5 +2068,103 @@ mod tests {
             NoopReporter::shared(),
         );
         assert_send(&sync);
+    }
+
+    // =========================================================
+    // Re-issued episodes with identical audio
+    // =========================================================
+
+    const REISSUED: FeedItem = FeedItem {
+        guid: "nomad-reissued",
+        ..NOMAD_ORIGINAL
+    };
+
+    fn audio_files(dir: &Path) -> Vec<String> {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".mp3"))
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[tokio::test]
+    async fn sync_records_new_guid_for_identical_audio_instead_of_a_copy() {
+        let dir = tempdir().unwrap();
+        // The mock serves "fake audio" for every enclosure, so the re-issued
+        // episode downloads byte for byte what is stored.
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+
+        let (result, events) = sync_recording(dir.path(), &[REISSUED]).await;
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.adopted, 1);
+        assert_eq!(audio_files(dir.path()), vec![format!("{}.mp3", NOMAD_STEM)]);
+        let metadata = crate::metadata::read_episode_metadata(
+            &dir.path().join(format!("{}.json", NOMAD_STEM)),
+        )
+        .unwrap();
+        assert_eq!(metadata.guid.as_deref(), Some("nomad-original"));
+        assert_eq!(
+            metadata.additional_guids,
+            vec!["nomad-reissued".to_string()]
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProgressEvent::EpisodeAlreadyStored { audio_filename, .. }
+                if *audio_filename == format!("{}.mp3", NOMAD_STEM)
+        )));
+
+        let (result, _) = sync_recording(dir.path(), &[REISSUED]).await;
+
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.adopted, 0);
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_settles_one_file_listed_under_two_live_guids() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+
+        sync_recording(dir.path(), &[NOMAD_ORIGINAL, REISSUED]).await;
+        let (result, _) = sync_recording(dir.path(), &[NOMAD_ORIGINAL, REISSUED]).await;
+
+        // Both GUIDs stay recorded, so neither is fetched again.
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.adopted, 0);
+        assert_eq!(result.skipped, 2);
+        assert_eq!(audio_files(dir.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_keeps_the_download_when_stored_audio_changed_since_its_hash() {
+        let dir = tempdir().unwrap();
+        // The recorded hash matches the new download, but the file on disk
+        // no longer holds those bytes.
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        std::fs::write(dir.path().join(format!("{}.mp3", NOMAD_STEM)), b"damaged").unwrap();
+
+        let (result, _) = sync_recording(dir.path(), &[REISSUED]).await;
+
+        assert_eq!(result.adopted, 0);
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(audio_files(dir.path()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sync_fails_an_identical_download_whose_guid_cannot_be_recorded() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        // A directory blocks the partial file the metadata is rewritten
+        // through; the scan cannot remove it.
+        std::fs::create_dir(dir.path().join(format!("{}.json.partial", NOMAD_STEM))).unwrap();
+
+        let (result, _) = sync_recording(dir.path(), &[REISSUED]).await;
+
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.adopted, 0);
+        assert_eq!(audio_files(dir.path()), vec![format!("{}.mp3", NOMAD_STEM)]);
     }
 }

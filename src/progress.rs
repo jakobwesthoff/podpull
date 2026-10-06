@@ -99,6 +99,16 @@ pub enum ProgressEvent {
     /// Partial files were cleaned up during directory scan
     PartialFilesCleanedUp { count: usize },
 
+    /// A new episode's audio turned out to be stored already, byte for
+    /// byte; its GUID was added to the stored episode instead of a copy
+    EpisodeAlreadyStored {
+        /// Identifies the download slot
+        download_id: usize,
+        episode_title: String,
+        /// The stored audio file the episode matched
+        audio_filename: String,
+    },
+
     /// A partial file left by an interrupted download could not be removed
     PartialFileStuck { path: PathBuf },
 
@@ -136,6 +146,8 @@ pub enum ProgressEvent {
         not_started_count: usize,
         /// Stored audio found damaged and left as it is
         damaged_count: usize,
+        /// New episodes found already stored, whose GUID was recorded
+        adopted_count: usize,
     },
 }
 
@@ -269,6 +281,13 @@ mod tests {
             failed_count: 1,
             not_started_count: 0,
             damaged_count: 0,
+            adopted_count: 0,
+        });
+
+        reporter.report(ProgressEvent::EpisodeAlreadyStored {
+            download_id: 0,
+            episode_title: "Episode 1".to_string(),
+            audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
         });
     }
 }
