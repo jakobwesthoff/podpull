@@ -13,7 +13,7 @@ use crate::error::DownloadError;
 use crate::feed::Episode;
 use crate::fs_sync::sync_file;
 use crate::http::HttpClient;
-use crate::progress::{ProgressEvent, SharedProgressReporter};
+use crate::progress::{ProgressEvent, ProgressReporter};
 
 /// Context for tracking a download in concurrent scenarios
 #[derive(Debug, Clone)]
@@ -107,7 +107,7 @@ pub async fn stage_download<C: HttpClient>(
     episode: &Episode,
     output_path: &Path,
     context: &DownloadContext,
-    reporter: &SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
 ) -> Result<StagedDownload, DownloadError> {
     let url = episode.enclosure.url.as_str();
 
@@ -282,7 +282,7 @@ mod tests {
             episode_index: 0,
             total_to_download: 1,
         };
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
 
         let staged = stage_download(&client, &episode, &output_path, &context, &reporter)
             .await
@@ -315,7 +315,7 @@ mod tests {
             episode_index: 0,
             total_to_download: 1,
         };
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
 
         let result = stage_download(&client, &episode, &output_path, &context, &reporter).await;
 
@@ -351,7 +351,7 @@ mod tests {
             &make_episode(),
             &output_path,
             &context,
-            &NoopReporter::shared(),
+            &NoopReporter,
         )
         .await;
 
@@ -385,7 +385,7 @@ mod tests {
             &make_episode(),
             &output_path,
             &context,
-            &NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -429,7 +429,7 @@ mod tests {
             &make_episode(),
             &output_path,
             &context(),
-            &NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -455,7 +455,7 @@ mod tests {
             &make_episode(),
             &output_path,
             &context(),
-            &NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();

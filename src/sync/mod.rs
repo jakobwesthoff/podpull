@@ -16,7 +16,7 @@ use crate::feed::{
 };
 use crate::http::HttpClient;
 use crate::metadata::write_podcast_metadata;
-use crate::progress::{ProgressEvent, SharedProgressReporter};
+use crate::progress::{ProgressEvent, ProgressReporter};
 use crate::state::{UnreadableMetadata, archive_check_targets, create_sync_plan, scan_output_dir};
 use downloads::download_all;
 use verify::verify_stored_audio;
@@ -117,13 +117,13 @@ pub async fn sync_podcast<C: HttpClient>(
     feed_source: &str,
     output_dir: &Path,
     options: &SyncOptions,
-    reporter: SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
 ) -> Result<SyncResult, SyncError> {
-    let podcast = load_podcast(client, feed_source, &reporter).await?;
+    let podcast = load_podcast(client, feed_source, reporter).await?;
 
     // Scan output directory (also cleans up any partial files from interrupted downloads)
     // Progress is reported from within scan_output_dir
-    let state = scan_output_dir(output_dir, &reporter)?;
+    let state = scan_output_dir(output_dir, reporter)?;
 
     // Report if any partial files were cleaned up
     if state.partial_files_cleaned() > 0 {
@@ -155,7 +155,7 @@ pub async fn sync_podcast<C: HttpClient>(
         &targets,
         state.output_dir(),
         options.audio_check == AudioCheck::Repair,
-        &reporter,
+        reporter,
     )
     .await;
     let repairs = verification.repairs.len();
@@ -186,7 +186,7 @@ pub async fn sync_podcast<C: HttpClient>(
         to_download,
         &state,
         &verification.intact,
-        &reporter,
+        reporter,
         options,
     )
     .await;
@@ -213,7 +213,7 @@ pub async fn sync_podcast<C: HttpClient>(
 async fn load_podcast<C: HttpClient>(
     client: &C,
     feed_source: &str,
-    reporter: &SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
 ) -> Result<Podcast, SyncError> {
     if is_url(feed_source) {
         reporter.report(ProgressEvent::FetchingFeed {
@@ -248,7 +248,6 @@ mod tests {
     use crate::state::{OutputState, PlannedDownload, Purpose};
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     use crate::http::{ByteStream, HttpResponse};
     use crate::progress::{NoopReporter, ProgressReporter};
@@ -337,7 +336,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir.path(),
             &SyncOptions::default(),
-            NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -369,7 +368,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir.path(),
             &options,
-            NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -393,7 +392,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir.path(),
             &SyncOptions::default(),
-            NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -404,7 +403,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir.path(),
             &SyncOptions::default(),
-            NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -423,14 +422,14 @@ mod tests {
             feed_xml: SAMPLE_FEED.to_string(),
             audio_data: b"fake audio".to_vec(),
         };
-        let reporter = Arc::new(RecordingReporter::default());
+        let reporter = RecordingReporter::default();
 
         let result = sync_podcast(
             &client,
             "https://example.com/feed.xml",
             dir.path(),
             &SyncOptions::default(),
-            reporter.clone(),
+            &reporter,
         )
         .await
         .unwrap();
@@ -543,7 +542,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir,
             options,
-            NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap()
@@ -807,13 +806,13 @@ mod tests {
     const NOMAD_STEM: &str = "2024-12-19-SFT Bits Sega Nomad";
 
     async fn sync_recording(dir: &Path, items: &[FeedItem]) -> (SyncResult, Vec<ProgressEvent>) {
-        let reporter = Arc::new(RecordingReporter::default());
+        let reporter = RecordingReporter::default();
         let result = sync_podcast(
             &client_for(items),
             "https://example.com/feed.xml",
             dir,
             &SyncOptions::default(),
-            reporter.clone(),
+            &reporter,
         )
         .await
         .unwrap();
@@ -1107,7 +1106,7 @@ mod tests {
         items: &[FeedItem],
         limit: Option<usize>,
     ) -> (SyncResult, Vec<ProgressEvent>) {
-        let reporter = Arc::new(RecordingReporter::default());
+        let reporter = RecordingReporter::default();
         let options = SyncOptions {
             limit,
             audio_check: AudioCheck::Repair,
@@ -1118,7 +1117,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir,
             &options,
-            reporter.clone(),
+            &reporter,
         )
         .await
         .unwrap();
@@ -1319,7 +1318,7 @@ mod tests {
                 "https://example.com/feed.xml",
                 dir.path(),
                 &options,
-                Arc::new(PanickingReporter),
+                &PanickingReporter,
             ),
         )
         .await
@@ -1379,7 +1378,7 @@ mod tests {
             &OutputState::empty(dir),
             &HashSet::new(),
             &context,
-            &NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .map(|_| ())
@@ -1471,7 +1470,7 @@ mod tests {
         items: &[FeedItem],
         audio_check: AudioCheck,
     ) -> (SyncResult, Vec<ProgressEvent>) {
-        let reporter = Arc::new(RecordingReporter::default());
+        let reporter = RecordingReporter::default();
         let result = sync_podcast(
             &client_for(items),
             "https://example.com/feed.xml",
@@ -1480,7 +1479,7 @@ mod tests {
                 audio_check,
                 ..Default::default()
             },
-            reporter.clone(),
+            &reporter,
         )
         .await
         .unwrap();
@@ -1628,7 +1627,7 @@ mod tests {
             "https://example.com/feed.xml",
             dir.path(),
             &SyncOptions::default(),
-            NoopReporter::shared(),
+            &NoopReporter,
         )
         .await
         .unwrap();
@@ -1653,7 +1652,7 @@ mod tests {
             "https://example.com/feed.xml",
             Path::new("/nonexistent"),
             &options,
-            NoopReporter::shared(),
+            &NoopReporter,
         );
         assert_send(&sync);
     }
@@ -1865,7 +1864,7 @@ mod tests {
     fn reissue_with_changed_candidate(dir: &Path) -> (PlannedDownload, String) {
         store_episode(dir, NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
         std::fs::write(dir.join(format!("{}.mp3", NOMAD_STEM)), b"changed").unwrap();
-        let state = scan_output_dir(dir, &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir, &NoopReporter).unwrap();
         let candidate = state
             .stored_episodes_with_guid("nomad-original")
             .next()
@@ -1906,11 +1905,10 @@ mod tests {
     async fn sync_records_which_checked_audio_is_intact() {
         let dir = tempdir().unwrap();
         store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
         let targets = archive_check_targets(&state, &create_sync_plan(Vec::new(), &state, None));
 
-        let verification =
-            verify_stored_audio(&targets, dir.path(), false, &NoopReporter::shared()).await;
+        let verification = verify_stored_audio(&targets, dir.path(), false, &NoopReporter).await;
 
         assert_eq!(
             verification.intact,
@@ -1964,14 +1962,14 @@ mod tests {
             feed_xml: SAMPLE_FEED.to_string(),
             audio_data: b"fake audio".to_vec(),
         };
-        let reporter = Arc::new(RecordingPanickingReporter::default());
+        let reporter = RecordingPanickingReporter::default();
 
         sync_podcast(
             &client,
             "https://example.com/feed.xml",
             dir.path(),
             &SyncOptions::default(),
-            reporter.clone(),
+            &reporter,
         )
         .await
         .unwrap();

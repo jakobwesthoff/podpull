@@ -8,7 +8,7 @@ use std::path::Path;
 use super::UnverifiableAudio;
 use crate::damage::{DamageKind, DamageRemedy, DamagedAudio};
 use crate::episode::{get_audio_extension, hash_file};
-use crate::progress::{ProgressEvent, SharedProgressReporter};
+use crate::progress::{ProgressEvent, ProgressReporter};
 use crate::state::{CheckTarget, PlannedDownload, Purpose};
 
 /// Outcome of checking stored audio against its recorded hashes
@@ -36,7 +36,7 @@ pub(super) async fn verify_stored_audio(
     targets: &[CheckTarget],
     output_dir: &Path,
     repair: bool,
-    reporter: &SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
 ) -> Verification {
     let mut verification = Verification {
         damaged: Vec::new(),

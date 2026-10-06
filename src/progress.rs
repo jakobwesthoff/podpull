@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::damage::{DamageKind, DamageRemedy};
 
@@ -128,9 +127,6 @@ pub trait ProgressReporter: Send + Sync {
     fn report(&self, event: ProgressEvent);
 }
 
-/// A shared reference to a progress reporter
-pub type SharedProgressReporter = Arc<dyn ProgressReporter>;
-
 /// A no-op progress reporter that silently ignores all events.
 /// Useful for tests or quiet mode.
 #[derive(Debug, Default, Clone, Copy)]
@@ -139,13 +135,6 @@ pub struct NoopReporter;
 impl ProgressReporter for NoopReporter {
     fn report(&self, _event: ProgressEvent) {
         // Intentionally empty
-    }
-}
-
-impl NoopReporter {
-    /// Create a new NoopReporter wrapped in an Arc
-    pub fn shared() -> SharedProgressReporter {
-        Arc::new(Self)
     }
 }
 

@@ -16,7 +16,7 @@ mod sync;
 pub use damage::{DamageKind, DamageRemedy, DamagedAudio};
 pub use error::SyncError;
 pub use http::{HttpClient, ReqwestClient};
-pub use progress::{NoopReporter, ProgressEvent, ProgressReporter, SharedProgressReporter};
+pub use progress::{NoopReporter, ProgressEvent, ProgressReporter};
 pub use state::UnreadableMetadata;
 pub use sync::{
     AudioCheck, FailedEpisode, SyncOptions, SyncResult, UnverifiableAudio, sync_podcast,

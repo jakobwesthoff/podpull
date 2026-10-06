@@ -13,7 +13,7 @@ use super::{FailedEpisode, SyncOptions};
 use crate::episode::{DownloadContext, filename_claim_key, hash_file, stage_download};
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
-use crate::progress::{ProgressEvent, SharedProgressReporter};
+use crate::progress::{ProgressEvent, ProgressReporter};
 use crate::state::{OutputState, PlannedDownload, Purpose, StoredEpisode};
 
 /// What became of one planned download
@@ -82,7 +82,7 @@ pub(super) async fn download_all<C: HttpClient>(
     to_download: Vec<PlannedDownload>,
     state: &OutputState,
     intact: &HashSet<String>,
-    reporter: &SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
     options: &SyncOptions,
 ) -> DownloadTotals {
     let total_to_download = to_download.len();
@@ -181,7 +181,7 @@ pub(super) async fn download_planned<C: HttpClient>(
     state: &OutputState,
     intact: &HashSet<String>,
     context: &DownloadContext,
-    reporter: &SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
 ) -> Result<Placed, String> {
     let episode = &planned.episode;
     let output_dir = state.output_dir();

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -15,7 +15,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use podpull::{
     AudioCheck, DamageKind, DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter,
-    ReqwestClient, SharedProgressReporter, SyncOptions, SyncResult, sync_podcast,
+    ReqwestClient, SyncOptions, SyncResult, sync_podcast,
 };
 
 // Emoji with fallback for terminals without Unicode support
@@ -516,10 +516,12 @@ async fn main() -> Result<()> {
 
     let options = sync_options(&args);
 
-    let reporter: SharedProgressReporter = if args.quiet {
-        NoopReporter::shared()
+    let indicatif;
+    let reporter: &dyn ProgressReporter = if args.quiet {
+        &NoopReporter
     } else {
-        Arc::new(IndicatifReporter::new())
+        indicatif = IndicatifReporter::new();
+        &indicatif
     };
 
     let result = sync_podcast(&client, &args.feed, &args.output_dir, &options, reporter)

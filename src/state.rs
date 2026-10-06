@@ -14,7 +14,7 @@ use crate::episode::{
 use crate::error::{MetadataError, StateError};
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
-use crate::progress::{ProgressEvent, SharedProgressReporter};
+use crate::progress::{ProgressEvent, ProgressReporter};
 
 /// State of the output directory, as found by [`scan_output_dir`]
 ///
@@ -253,7 +253,7 @@ pub struct CheckTarget {
 /// fails the scan.
 pub fn scan_output_dir(
     output_dir: &Path,
-    reporter: &SharedProgressReporter,
+    reporter: &dyn ProgressReporter,
 ) -> Result<OutputState, StateError> {
     let mut existing_files = HashSet::new();
     let mut partial_files_cleaned = 0;
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn scan_empty_dir_returns_empty_state() {
         let dir = tempdir().unwrap();
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         assert!(state.stored_episodes().next().is_none());
@@ -816,7 +816,7 @@ mod tests {
     fn scan_creates_nonexistent_dir() {
         let dir = tempdir().unwrap();
         let output_dir = dir.path().join("new_podcast");
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
 
         assert!(!output_dir.exists());
         let state = scan_output_dir(&output_dir, &reporter).unwrap();
@@ -833,7 +833,7 @@ mod tests {
         let meta_path = dir.path().join("2024-01-15-test-episode.json");
         write_episode_metadata(&episode, "2024-01-15-test-episode.mp3", None, &meta_path).unwrap();
 
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         assert!(
@@ -862,7 +862,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("truncated.json"), b"{\"title\": \"Trunc").unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         let unreadable: Vec<_> = state
             .unreadable_metadata
@@ -884,7 +884,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("binary.json"), [0xff, 0xfe, 0x00]).unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         assert_eq!(
             state.unreadable_metadata()[0].path,
@@ -899,7 +899,7 @@ mod tests {
         // connection would, rather than yielding broken content.
         std::fs::create_dir(dir.path().join("2024-01-15-Episode.json")).unwrap();
 
-        let result = scan_output_dir(dir.path(), &NoopReporter::shared());
+        let result = scan_output_dir(dir.path(), &NoopReporter);
 
         assert!(matches!(
             result,
@@ -924,7 +924,7 @@ mod tests {
         std::fs::write(dir.path().join("2019-12-27-Neuzuga\u{0308}nge #4.mp3"), b"").unwrap();
         std::fs::write(dir.path().join("2024-01-18-Cut.mp3.partial"), b"").unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         let expected: HashSet<String> = [
             "2024-01-15-Readable",
@@ -952,7 +952,7 @@ mod tests {
         )
         .unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         let stored = state
             .stored_episode(&filename_claim_key("2019-12-27-Neuzug\u{00e4}nge #4"))
@@ -976,7 +976,7 @@ mod tests {
         )
         .unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         assert_eq!(
             state
@@ -1011,7 +1011,7 @@ mod tests {
         )
         .unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         let listed = |guid: &str| {
             state
@@ -1032,7 +1032,7 @@ mod tests {
         std::fs::create_dir(&stuck).unwrap();
         std::fs::write(dir.path().join("2024-01-16-Episode.mp3.partial"), b"").unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         assert_eq!(state.partial_files_cleaned(), 1);
         assert_eq!(state.stuck_partial_files, vec![stuck]);
@@ -1051,7 +1051,7 @@ mod tests {
         .unwrap();
         crate::metadata::add_guid_to_episode_metadata(&path, "new-guid").unwrap();
 
-        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let state = scan_output_dir(dir.path(), &NoopReporter).unwrap();
 
         assert!(state.stored_episodes_with_guid("old-guid").next().is_some());
         assert!(state.stored_episodes_with_guid("new-guid").next().is_some());
@@ -1090,7 +1090,7 @@ mod tests {
         )
         .unwrap();
 
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         // podcast.json claims its stem but is no episode
@@ -1717,7 +1717,7 @@ mod tests {
         // Create a normal file
         std::fs::write(dir.path().join("episode3.mp3"), b"complete audio").unwrap();
 
-        let reporter = NoopReporter::shared();
+        let reporter = NoopReporter;
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         // Partial files should have been cleaned up
