@@ -421,6 +421,19 @@ mod tests {
     }
 
     #[test]
+    fn reporter_prints_collision_warnings() {
+        let reporter = IndicatifReporter::new();
+
+        reporter.report(ProgressEvent::MetadataUnreadable {
+            path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
+        });
+        reporter.report(ProgressEvent::StoredAudioMismatch {
+            episode_title: "Sega Nomad".to_string(),
+            audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+        });
+    }
+
+    #[test]
     fn stored_audio_mismatch_message_names_episode_and_file() {
         assert_eq!(
             stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
