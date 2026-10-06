@@ -37,7 +37,6 @@ pub struct Episode {
 #[derive(Debug, Clone)]
 pub struct Enclosure {
     pub url: Url,
-    pub length: Option<u64>,
     pub mime_type: Option<String>,
 }
 
@@ -114,7 +113,6 @@ fn parse_episode(item: &rss::Item) -> Result<Episode, FeedError> {
         guid,
         enclosure: Enclosure {
             url: enclosure_url,
-            length: enclosure.length().parse().ok(),
             mime_type: Some(enclosure.mime_type().to_string()).filter(|s| !s.is_empty()),
         },
         duration: itunes.and_then(|ext| ext.duration().map(String::from)),
@@ -198,7 +196,6 @@ mod tests {
         assert_eq!(ep1.duration, Some("30:00".to_string()));
         assert_eq!(ep1.episode_number, Some(1));
         assert_eq!(ep1.season_number, Some(1));
-        assert_eq!(ep1.enclosure.length, Some(1234567));
     }
 
     #[test]

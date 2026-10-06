@@ -53,18 +53,6 @@ pub fn write_podcast_metadata(podcast: &Podcast, output_dir: &Path) -> Result<()
     stage_metadata_file(&path, json.as_bytes())?.commit()
 }
 
-/// Read podcast metadata from the output directory
-pub fn read_podcast_metadata(output_dir: &Path) -> Result<PodcastMetadata, MetadataError> {
-    let path = output_dir.join(PODCAST_METADATA_FILENAME);
-
-    let content = std::fs::read_to_string(&path).map_err(|e| MetadataError::ReadFailed {
-        path: path.clone(),
-        source: e,
-    })?;
-
-    serde_json::from_str(&content).map_err(|e| MetadataError::JsonParseFailed { path, source: e })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,7 +94,10 @@ mod tests {
         let podcast = make_podcast();
 
         write_podcast_metadata(&podcast, dir.path()).unwrap();
-        let read_back = read_podcast_metadata(dir.path()).unwrap();
+        let read_back: PodcastMetadata = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("podcast.json")).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(read_back.title, "Test Podcast");
         assert_eq!(read_back.description, Some("A test podcast".to_string()));
@@ -125,14 +116,7 @@ mod tests {
 
         let result = write_podcast_metadata(&make_podcast(), dir.path());
 
-        assert!(matches!(result, Err(MetadataError::WriteFailed { .. })));
+        assert!(matches!(result, Err(MetadataError::Write { .. })));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), previous);
-    }
-
-    #[test]
-    fn read_nonexistent_returns_error() {
-        let dir = tempdir().unwrap();
-        let result = read_podcast_metadata(dir.path());
-        assert!(result.is_err());
     }
 }

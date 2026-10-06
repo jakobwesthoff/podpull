@@ -101,11 +101,6 @@ impl OutputState {
         &self.unreadable_metadata
     }
 
-    /// Whether readable metadata in the directory records this GUID
-    pub fn is_downloaded(&self, guid: &str) -> bool {
-        self.claim_keys_by_guid.contains_key(guid)
-    }
-
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
     /// the output directory, which new downloads must not reuse
     pub fn claimed_keys(&self) -> &HashSet<String> {
@@ -405,13 +400,10 @@ pub fn scan_output_dir(
             // error, by contrast, may be a passing network failure; treating
             // it the same would leave a second copy once the file reads fine
             // again, so the scan stops and the next run retries.
-            Err(MetadataError::ReadFailed { source, .. })
+            Err(MetadataError::Read { source, .. })
                 if source.kind() != std::io::ErrorKind::InvalidData =>
             {
-                return Err(StateError::Metadata(MetadataError::ReadFailed {
-                    path,
-                    source,
-                }));
+                return Err(StateError::Metadata(MetadataError::Read { path, source }));
             }
             Err(error) => unreadable_metadata.push(UnreadableMetadata {
                 path,
@@ -697,7 +689,6 @@ mod tests {
             guid: guid.map(String::from),
             enclosure: Enclosure {
                 url: Url::parse("https://example.com/ep.mp3").unwrap(),
-                length: None,
                 mime_type: None,
             },
             duration: None,
@@ -718,7 +709,6 @@ mod tests {
             guid: guid.map(String::from),
             enclosure: Enclosure {
                 url: Url::parse("https://example.com/ep.mp3").unwrap(),
-                length: None,
                 mime_type: None,
             },
             duration: None,
@@ -752,7 +742,6 @@ mod tests {
             guid: Some(url.to_string()),
             enclosure: Enclosure {
                 url: Url::parse(url).unwrap(),
-                length: None,
                 mime_type: None,
             },
             ..make_episode_with_date(title, None, make_time(time))
@@ -849,7 +838,12 @@ mod tests {
         let reporter = NoopReporter::shared();
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
-        assert!(state.is_downloaded("test-guid-123"));
+        assert!(
+            state
+                .stored_episodes_with_guid("test-guid-123")
+                .next()
+                .is_some()
+        );
         assert!(
             state
                 .claimed_keys()
@@ -879,7 +873,12 @@ mod tests {
             .collect();
         assert_eq!(unreadable, vec![&dir.path().join("truncated.json")]);
         assert!(state.unreadable_metadata()[0].error.contains("EOF"));
-        assert!(state.is_downloaded("readable-guid"));
+        assert!(
+            state
+                .stored_episodes_with_guid("readable-guid")
+                .next()
+                .is_some()
+        );
     }
 
     #[test]
@@ -906,7 +905,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(StateError::Metadata(MetadataError::ReadFailed { .. }))
+            Err(StateError::Metadata(MetadataError::Read { .. }))
         ));
     }
 
@@ -1056,8 +1055,8 @@ mod tests {
 
         let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
 
-        assert!(state.is_downloaded("old-guid"));
-        assert!(state.is_downloaded("new-guid"));
+        assert!(state.stored_episodes_with_guid("old-guid").next().is_some());
+        assert!(state.stored_episodes_with_guid("new-guid").next().is_some());
     }
 
     #[test]
@@ -1155,7 +1154,6 @@ mod tests {
         let episode = Episode {
             enclosure: Enclosure {
                 url: Url::parse("https://example.com/book.m4a").unwrap(),
-                length: None,
                 mime_type: None,
             },
             ..make_episode_with_date("Audio Book", Some("guid-1"), Some(make_date(2024, 1, 16)))

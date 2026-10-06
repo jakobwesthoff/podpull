@@ -10,8 +10,6 @@ use url::Url;
 use crate::error::FeedError;
 use crate::http::HttpClient;
 
-use super::parse::{Podcast, parse_feed};
-
 /// Fetch raw feed bytes from a URL (without parsing)
 pub async fn fetch_feed_bytes<C: HttpClient>(client: &C, url: &str) -> Result<Bytes, FeedError> {
     let bytes = client
@@ -37,20 +35,6 @@ pub fn file_path_to_url(path: &Path) -> Url {
     Url::from_file_path(path).unwrap_or_else(|_| {
         Url::parse(&format!("file://{}", path.display())).expect("valid file URL")
     })
-}
-
-/// Fetch and parse a podcast feed from a URL
-pub async fn fetch_feed<C: HttpClient>(client: &C, url: &str) -> Result<Podcast, FeedError> {
-    let feed_url = Url::parse(url)?;
-    let bytes = fetch_feed_bytes(client, url).await?;
-    parse_feed(&bytes, feed_url)
-}
-
-/// Parse a podcast feed from a local file
-pub fn parse_feed_file(path: &Path) -> Result<Podcast, FeedError> {
-    let bytes = read_feed_file(path)?;
-    let feed_url = file_path_to_url(path);
-    parse_feed(&bytes, feed_url)
 }
 
 /// Determine if a string is a URL or a file path

@@ -256,8 +256,8 @@ pub(super) async fn download_planned<C: HttpClient>(
         episode_title: episode.title.clone(),
     });
 
-    let downloaded = match staged_audio.finalize().await {
-        Ok(downloaded) => downloaded,
+    let bytes_downloaded = match staged_audio.finalize().await {
+        Ok(bytes_downloaded) => bytes_downloaded,
         Err(e) => {
             blocking(move || staged_metadata.discard()).await?;
             return Err(e.to_string());
@@ -283,7 +283,7 @@ pub(super) async fn download_planned<C: HttpClient>(
     reporter.report(ProgressEvent::DownloadCompleted {
         download_id: context.download_id,
         episode_title: episode.title.clone(),
-        bytes_downloaded: downloaded.bytes_downloaded,
+        bytes_downloaded,
     });
     Ok(Placed::Downloaded)
 }

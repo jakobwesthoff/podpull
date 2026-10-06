@@ -11,11 +11,10 @@ use crate::fs_sync::sync_file;
 mod episode;
 mod podcast;
 
-pub use episode::{
-    EpisodeMetadata, add_guid_to_episode_metadata, read_episode_metadata, stage_episode_metadata,
-    write_episode_metadata,
-};
-pub use podcast::{PodcastMetadata, read_podcast_metadata, write_podcast_metadata};
+#[cfg(test)]
+pub use episode::write_episode_metadata;
+pub use episode::{EpisodeMetadata, add_guid_to_episode_metadata, read_episode_metadata};
+pub use podcast::write_podcast_metadata;
 
 /// A metadata file written to its partial file but not yet under its final
 /// name
@@ -40,7 +39,7 @@ impl StagedMetadata {
     pub fn commit(self) -> Result<(), MetadataError> {
         std::fs::rename(&self.partial_path, &self.path).map_err(|e| {
             let _ = std::fs::remove_file(&self.partial_path);
-            MetadataError::WriteFailed {
+            MetadataError::Write {
                 path: self.path.clone(),
                 source: e,
             }
@@ -62,7 +61,7 @@ impl StagedMetadata {
 /// the rename before the data and leave an empty file under the final name.
 fn stage_metadata_file(path: &Path, contents: &[u8]) -> Result<StagedMetadata, MetadataError> {
     let partial_path = PathBuf::from(format!("{}.partial", path.display()));
-    let write_failed = |e| MetadataError::WriteFailed {
+    let write_failed = |e| MetadataError::Write {
         path: partial_path.clone(),
         source: e,
     };

@@ -68,20 +68,6 @@ pub fn get_audio_extension(episode: &Episode) -> String {
     "mp3".to_string()
 }
 
-/// Generate a complete filename for an episode (with extension)
-///
-/// This is the base name only. Episodes sharing title and publication day
-/// get the same base name; [`generate_unique_filename_stem`] resolves that.
-#[deprecated(
-    since = "1.2.0",
-    note = "episodes sharing title and date collide; use `generate_unique_filename_stem` or the names in `SyncPlan::to_download`"
-)]
-pub fn generate_filename(episode: &Episode) -> String {
-    let stem = generate_filename_stem(episode);
-    let ext = get_audio_extension(episode);
-    format!("{}.{}", stem, ext)
-}
-
 /// Key under which a filename stem occupies its place in a directory
 ///
 /// Filesystems commonly treat names as equal that differ in letter case
@@ -287,7 +273,6 @@ mod tests {
             guid: Some("test-guid".to_string()),
             enclosure: Enclosure {
                 url: Url::parse(url).unwrap(),
-                length: None,
                 mime_type: mime.map(String::from),
             },
             duration: None,
@@ -578,30 +563,6 @@ mod tests {
     }
 
     // === Full filename tests ===
-
-    #[test]
-    #[allow(deprecated)]
-    fn generate_filename_combines_stem_and_extension() {
-        let episode = make_episode(
-            "My Episode",
-            Some("Mon, 15 Jan 2024 12:00:00 +0000"),
-            "https://example.com/audio.mp3",
-        );
-
-        assert_eq!(generate_filename(&episode), "2024-01-15-My Episode.mp3");
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn generate_filename_with_m4a() {
-        let episode = make_episode(
-            "Audio Book",
-            Some("Tue, 16 Jan 2024 12:00:00 +0000"),
-            "https://example.com/book.m4a",
-        );
-
-        assert_eq!(generate_filename(&episode), "2024-01-16-Audio Book.m4a");
-    }
 
     // === Claim key tests ===
 

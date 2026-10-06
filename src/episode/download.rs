@@ -26,15 +26,6 @@ pub struct DownloadContext {
     pub total_to_download: usize,
 }
 
-/// Result of a successful download
-#[derive(Debug, Clone)]
-pub struct DownloadResult {
-    /// Number of bytes downloaded
-    pub bytes_downloaded: u64,
-    /// SHA-256 hash of the downloaded content (format: "sha256:...")
-    pub content_hash: String,
-}
-
 /// Read size for hashing stored audio; large reads keep the number of
 /// round trips low on a network share
 const HASH_READ_SIZE: usize = 1024 * 1024;
@@ -44,7 +35,7 @@ fn content_hash(hasher: Sha256) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-/// Hash a file in the format [`DownloadResult::content_hash`] uses
+/// Hash a file in the format [`StagedDownload::content_hash`] uses
 ///
 /// Reads the whole file, so on a network share it costs a full transfer.
 /// Blocks the calling thread while it reads.
@@ -67,38 +58,7 @@ pub(crate) fn hash_file(path: &Path) -> std::io::Result<String> {
 ///
 /// Staging lets a caller put the episode's metadata in place before the
 /// audio becomes visible, so an interruption never leaves audio without
-/// metadata behind:
-///
-/// ```no_run
-/// use podpull::{
-///     DownloadContext, Episode, NoopReporter, ReqwestClient,
-///     SharedProgressReporter, stage_download, stage_episode_metadata,
-/// };
-/// use std::path::Path;
-/// use std::sync::Arc;
-///
-/// # async fn store(episode: &Episode) -> Result<(), Box<dyn std::error::Error>> {
-/// let client = ReqwestClient::new();
-/// let reporter: SharedProgressReporter = Arc::new(NoopReporter);
-/// let context = DownloadContext {
-///     download_id: 0,
-///     episode_index: 0,
-///     total_to_download: 1,
-/// };
-/// let audio_path = Path::new("archive/2024-12-19-Sega Nomad.mp3");
-///
-/// let audio = stage_download(&client, episode, audio_path, &context, &reporter).await?;
-/// let metadata = stage_episode_metadata(
-///     episode,
-///     "2024-12-19-Sega Nomad.mp3",
-///     Some(audio.content_hash().to_string()),
-///     Path::new("archive/2024-12-19-Sega Nomad.json"),
-/// )?;
-/// audio.finalize().await?;
-/// metadata.commit()?;
-/// # Ok(())
-/// # }
-/// ```
+/// metadata behind.
 #[derive(Debug)]
 pub struct StagedDownload {
     partial_path: PathBuf,
@@ -108,20 +68,17 @@ pub struct StagedDownload {
 }
 
 impl StagedDownload {
-    pub fn bytes_downloaded(&self) -> u64 {
-        self.bytes_downloaded
-    }
-
     /// SHA-256 hash of the downloaded content (format: "sha256:...")
     pub fn content_hash(&self) -> &str {
         &self.content_hash
     }
 
-    /// Move the audio from its partial file to its final name
+    /// Move the audio from its partial file to its final name, returning
+    /// the number of bytes downloaded
     ///
     /// If the rename fails, the partial file stays behind and the next
     /// directory scan reports it.
-    pub async fn finalize(self) -> Result<DownloadResult, DownloadError> {
+    pub async fn finalize(self) -> Result<u64, DownloadError> {
         tokio::fs::rename(&self.partial_path, &self.final_path)
             .await
             .map_err(|e| DownloadError::RenameFailed {
@@ -129,10 +86,7 @@ impl StagedDownload {
                 final_path: self.final_path.clone(),
                 source: e,
             })?;
-        Ok(DownloadResult {
-            bytes_downloaded: self.bytes_downloaded,
-            content_hash: self.content_hash,
-        })
+        Ok(self.bytes_downloaded)
     }
 
     /// Abandon the download and remove its partial file
@@ -269,35 +223,6 @@ pub async fn stage_download<C: HttpClient>(
     })
 }
 
-/// Download an episode to the specified output path
-///
-/// Stages the download (see [`stage_download`]) and moves it to its final
-/// name right away. Returns a `DownloadResult` containing bytes downloaded
-/// and content hash.
-pub async fn download_episode<C: HttpClient>(
-    client: &C,
-    episode: &Episode,
-    output_path: &Path,
-    context: &DownloadContext,
-    reporter: &SharedProgressReporter,
-) -> Result<DownloadResult, DownloadError> {
-    let staged = stage_download(client, episode, output_path, context, reporter).await?;
-
-    reporter.report(ProgressEvent::Finalizing {
-        download_id: context.download_id,
-        episode_title: episode.title.clone(),
-    });
-    let result = staged.finalize().await?;
-
-    reporter.report(ProgressEvent::DownloadCompleted {
-        download_id: context.download_id,
-        episode_title: episode.title.clone(),
-        bytes_downloaded: result.bytes_downloaded,
-    });
-
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,7 +269,6 @@ mod tests {
             guid: Some("test-guid".to_string()),
             enclosure: Enclosure {
                 url: Url::parse("https://example.com/episode.mp3").unwrap(),
-                length: Some(1000),
                 mime_type: Some("audio/mpeg".to_string()),
             },
             duration: None,
@@ -371,12 +295,13 @@ mod tests {
         };
         let reporter = NoopReporter::shared();
 
-        let result = download_episode(&client, &episode, &output_path, &context, &reporter)
+        let staged = stage_download(&client, &episode, &output_path, &context, &reporter)
             .await
             .unwrap();
+        assert!(staged.content_hash().starts_with("sha256:"));
+        let bytes_downloaded = staged.finalize().await.unwrap();
 
-        assert_eq!(result.bytes_downloaded, 18); // "test audio content".len()
-        assert!(result.content_hash.starts_with("sha256:"));
+        assert_eq!(bytes_downloaded, 18); // "test audio content".len()
         assert!(output_path.exists());
         // Verify no .partial file remains
         assert!(!dir.path().join("episode.mp3.partial").exists());
@@ -403,7 +328,7 @@ mod tests {
         };
         let reporter = NoopReporter::shared();
 
-        let result = download_episode(&client, &episode, &output_path, &context, &reporter).await;
+        let result = stage_download(&client, &episode, &output_path, &context, &reporter).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -432,7 +357,7 @@ mod tests {
             total_to_download: 1,
         };
 
-        let result = download_episode(
+        let result = stage_download(
             &client,
             &make_episode(),
             &output_path,
@@ -466,7 +391,7 @@ mod tests {
             total_to_download: 1,
         };
 
-        let result = download_episode(
+        let staged = stage_download(
             &client,
             &make_episode(),
             &output_path,
@@ -475,8 +400,10 @@ mod tests {
         )
         .await
         .unwrap();
+        let recorded_hash = staged.content_hash().to_string();
+        staged.finalize().await.unwrap();
 
-        assert_eq!(hash_file(&output_path).unwrap(), result.content_hash);
+        assert_eq!(hash_file(&output_path).unwrap(), recorded_hash);
     }
 
     #[test]
@@ -521,10 +448,9 @@ mod tests {
         assert!(!output_path.exists());
         assert!(dir.path().join("episode.mp3.partial").exists());
 
-        let result = staged.finalize().await.unwrap();
+        let bytes_downloaded = staged.finalize().await.unwrap();
 
-        assert_eq!(result.bytes_downloaded, 18);
-        assert_eq!(hash_file(&output_path).unwrap(), result.content_hash);
+        assert_eq!(bytes_downloaded, 18);
 
         assert_eq!(std::fs::read(&output_path).unwrap(), b"test audio content");
         assert!(!dir.path().join("episode.mp3.partial").exists());

@@ -5,7 +5,7 @@
 mod fetch;
 mod parse;
 
-pub use fetch::{
-    fetch_feed, fetch_feed_bytes, file_path_to_url, is_url, parse_feed_file, read_feed_file,
-};
-pub use parse::{Enclosure, Episode, Podcast, parse_feed};
+pub use fetch::{fetch_feed_bytes, file_path_to_url, is_url, read_feed_file};
+#[cfg(test)]
+pub use parse::Enclosure;
+pub use parse::{Episode, Podcast, parse_feed};

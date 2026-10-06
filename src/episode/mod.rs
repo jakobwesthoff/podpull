@@ -6,11 +6,7 @@ mod download;
 mod filename;
 
 pub(crate) use download::hash_file;
-pub use download::{
-    DownloadContext, DownloadResult, StagedDownload, download_episode, stage_download,
-};
-#[allow(deprecated)]
-pub use filename::generate_filename;
+pub use download::{DownloadContext, stage_download};
 pub use filename::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };

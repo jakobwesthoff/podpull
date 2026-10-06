@@ -67,24 +67,18 @@ impl EpisodeMetadata {
     }
 }
 
-/// Write episode metadata into the partial file next to `path`
-pub fn stage_episode_metadata(
-    episode: &Episode,
-    audio_filename: &str,
-    content_hash: Option<String>,
-    path: &Path,
-) -> Result<StagedMetadata, MetadataError> {
-    EpisodeMetadata::from_episode(episode, audio_filename, content_hash).stage(path)
-}
-
-/// Write episode metadata to a JSON file, replacing an existing one atomically
+/// Write episode metadata to a JSON file, replacing an existing one
+/// atomically, as tests set up stored episodes
+#[cfg(test)]
 pub fn write_episode_metadata(
     episode: &Episode,
     audio_filename: &str,
     content_hash: Option<String>,
     path: &Path,
 ) -> Result<(), MetadataError> {
-    stage_episode_metadata(episode, audio_filename, content_hash, path)?.commit()
+    EpisodeMetadata::from_episode(episode, audio_filename, content_hash)
+        .stage(path)?
+        .commit()
 }
 
 /// Record that the feed also lists the episode at `path` under `guid`
@@ -106,12 +100,12 @@ pub fn add_guid_to_episode_metadata(path: &Path, guid: &str) -> Result<(), Metad
 
 /// Read episode metadata from a JSON file
 pub fn read_episode_metadata(path: &Path) -> Result<EpisodeMetadata, MetadataError> {
-    let content = std::fs::read_to_string(path).map_err(|e| MetadataError::ReadFailed {
+    let content = std::fs::read_to_string(path).map_err(|e| MetadataError::Read {
         path: path.to_path_buf(),
         source: e,
     })?;
 
-    serde_json::from_str(&content).map_err(|e| MetadataError::JsonParseFailed {
+    serde_json::from_str(&content).map_err(|e| MetadataError::JsonParse {
         path: path.to_path_buf(),
         source: e,
     })
@@ -133,7 +127,6 @@ mod tests {
             guid: Some("test-guid-123".to_string()),
             enclosure: Enclosure {
                 url: Url::parse("https://example.com/episode.mp3").unwrap(),
-                length: Some(1234567),
                 mime_type: Some("audio/mpeg".to_string()),
             },
             duration: Some("30:00".to_string()),
@@ -209,7 +202,7 @@ mod tests {
 
         let result = write_episode_metadata(&make_episode(), "test.mp3", None, &path);
 
-        assert!(matches!(result, Err(MetadataError::WriteFailed { .. })));
+        assert!(matches!(result, Err(MetadataError::Write { .. })));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), previous);
     }
 
@@ -226,8 +219,8 @@ mod tests {
         let result = write_episode_metadata(&make_episode(), "test.mp3", None, &path);
 
         match result {
-            Err(MetadataError::WriteFailed { path: failed, .. }) => assert_eq!(failed, path),
-            other => panic!("Expected WriteFailed, got {other:?}"),
+            Err(MetadataError::Write { path: failed, .. }) => assert_eq!(failed, path),
+            other => panic!("Expected Write, got {other:?}"),
         }
         assert!(!dir.path().join("episode.json.partial").exists());
     }
@@ -237,7 +230,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("episode.json");
 
-        let staged = stage_episode_metadata(&make_episode(), "test.mp3", None, &path).unwrap();
+        let staged = EpisodeMetadata::from_episode(&make_episode(), "test.mp3", None)
+            .stage(&path)
+            .unwrap();
 
         assert!(!path.exists());
         assert!(dir.path().join("episode.json.partial").exists());
@@ -253,7 +248,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("episode.json");
 
-        stage_episode_metadata(&make_episode(), "test.mp3", None, &path)
+        EpisodeMetadata::from_episode(&make_episode(), "test.mp3", None)
+            .stage(&path)
             .unwrap()
             .discard();
 
@@ -321,7 +317,6 @@ mod tests {
             guid: None,
             enclosure: Enclosure {
                 url: Url::parse("https://example.com/ep.mp3").unwrap(),
-                length: None,
                 mime_type: None,
             },
             duration: None,

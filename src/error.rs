@@ -87,28 +87,28 @@ pub enum DownloadError {
 #[derive(Error, Debug)]
 pub enum MetadataError {
     #[error("Failed to read metadata file {path}: {source}")]
-    ReadFailed {
+    Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
     #[error("Failed to write metadata file {path}: {source}")]
-    WriteFailed {
+    Write {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
     #[error("Failed to parse metadata JSON in {path}: {source}")]
-    JsonParseFailed {
+    JsonParse {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
     },
 
     #[error("Failed to serialize metadata: {0}")]
-    JsonSerializeFailed(#[from] serde_json::Error),
+    JsonSerialize(#[from] serde_json::Error),
 }
 
 /// Errors that can occur when scanning the output directory

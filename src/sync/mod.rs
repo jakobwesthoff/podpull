@@ -575,7 +575,6 @@ mod tests {
             guid: Some(item.guid.to_string()),
             enclosure: crate::feed::Enclosure {
                 url: url::Url::parse(&format!("https://example.com/{}.mp3", item.guid)).unwrap(),
-                length: None,
                 mime_type: None,
             },
             duration: None,
