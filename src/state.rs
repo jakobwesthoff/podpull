@@ -155,6 +155,8 @@ pub struct StoredEpisode {
     pub pub_date: Option<DateTime<FixedOffset>>,
     /// Name of the audio file, spelled the way the directory lists it
     pub audio_filename: String,
+    /// Whether the directory listing holds the audio file
+    pub audio_listed: bool,
     /// Name of the metadata file, spelled the way the directory lists it
     pub metadata_filename: String,
     /// Hash of the audio as downloaded, if the metadata records one
@@ -344,6 +346,10 @@ pub fn scan_output_dir(
         .filter_map(|name| Path::new(name).file_stem())
         .map(|stem| filename_claim_key(&stem.to_string_lossy()))
         .collect();
+    let listed_keys: HashSet<String> = existing_files
+        .iter()
+        .map(|name| filename_claim_key(name))
+        .collect();
 
     // Process JSON metadata files with progress (this is the slow part on network shares)
     let total_json_files = json_files.len();
@@ -387,6 +393,7 @@ pub fn scan_output_dir(
                         pub_date: metadata
                             .pub_date
                             .and_then(|date| DateTime::parse_from_rfc3339(&date).ok()),
+                        audio_listed: listed_keys.contains(&filename_claim_key(&audio_filename)),
                         audio_filename,
                         metadata_filename: format!("{}.json", stem),
                         content_hash: metadata.content_hash,
@@ -720,6 +727,7 @@ mod tests {
             original_url: "https://example.com/ep.mp3".to_string(),
             pub_date: None,
             audio_filename: format!("{}.mp3", stem),
+            audio_listed: true,
             metadata_filename: format!("{}.json", stem),
             content_hash: None,
         }
@@ -972,6 +980,43 @@ mod tests {
                 .audio_filename,
             "2024-01-15-Bare"
         );
+    }
+
+    #[test]
+    fn scan_records_whether_the_audio_of_a_stored_episode_is_listed() {
+        let dir = tempdir().unwrap();
+        for stem in [
+            "2024-01-01-Present",
+            "2024-01-02-Gone",
+            "2024-01-03-Neuzugänge",
+        ] {
+            write_episode_metadata(
+                &make_episode(stem, Some(stem)),
+                &format!("{}.mp3", stem),
+                None,
+                &dir.path().join(format!("{}.json", stem)),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.path().join("2024-01-01-Present.mp3"), b"audio").unwrap();
+        // Shares mounted on macOS list "ä" decomposed.
+        std::fs::write(
+            dir.path().join("2024-01-03-Neuzuga\u{0308}nge.mp3"),
+            b"audio",
+        )
+        .unwrap();
+
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+
+        let listed = |guid: &str| {
+            state
+                .stored_episodes_with_guid(guid)
+                .map(|stored| stored.audio_listed)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed("2024-01-01-Present"), vec![true]);
+        assert_eq!(listed("2024-01-02-Gone"), vec![false]);
+        assert_eq!(listed("2024-01-03-Neuzugänge"), vec![true]);
     }
 
     #[test]

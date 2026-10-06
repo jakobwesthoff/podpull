@@ -36,4 +36,6 @@ pub use state::{
     CheckTarget, OutputState, PlannedDownload, StoredEpisode, SyncPlan, UnreadableMetadata,
     create_sync_plan, scan_output_dir,
 };
-pub use sync::{AudioCheck, DamageRemedy, DamagedAudio, SyncOptions, SyncResult, sync_podcast};
+pub use sync::{
+    AudioCheck, DamageKind, DamageRemedy, DamagedAudio, SyncOptions, SyncResult, sync_podcast,
+};

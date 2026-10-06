@@ -134,6 +134,14 @@ pub enum ProgressEvent {
         remedy: DamageRemedy,
     },
 
+    /// The directory no longer lists the audio file an episode's metadata
+    /// names
+    StoredAudioMissing {
+        episode_title: String,
+        audio_filename: String,
+        remedy: DamageRemedy,
+    },
+
     /// Sync operation completed
     SyncCompleted {
         /// New episodes downloaded
@@ -266,6 +274,12 @@ mod tests {
             episode_title: "Episode 1".to_string(),
             audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
             remedy: DamageRemedy::RepairAvailable,
+        });
+
+        reporter.report(ProgressEvent::StoredAudioMissing {
+            episode_title: "Episode 2".to_string(),
+            audio_filename: "2024-01-16-Episode 2.mp3".to_string(),
+            remedy: DamageRemedy::NoFeedEpisode,
         });
 
         reporter.report(ProgressEvent::VerifyingStoredAudio {

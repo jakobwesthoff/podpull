@@ -106,14 +106,14 @@ pub struct SyncResult {
     /// Number of episodes not started because an earlier download failed
     /// and `continue_on_error` is off
     pub not_started: usize,
-    /// Stored audio found not to match its recorded hash and left as it is
+    /// Stored audio found damaged or missing and left as it is
     pub damaged: Vec<DamagedAudio>,
     /// Number of new episodes whose audio was already stored byte for byte,
     /// so only their GUID was recorded
     pub adopted: usize,
 }
 
-/// What happens with stored audio that no longer matches its recorded hash
+/// What happens with stored audio that is damaged or missing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DamageRemedy {
@@ -130,13 +130,24 @@ pub enum DamageRemedy {
     EnclosureFormatChanged,
 }
 
-/// Stored audio that no longer matches its recorded hash and was left as
-/// it is
+/// How stored audio differs from what its metadata records
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DamageKind {
+    /// The audio file no longer matches the hash recorded when it was
+    /// downloaded
+    Mismatch,
+    /// The directory does not list the audio file the metadata names
+    Missing,
+}
+
+/// Stored audio that is damaged or missing and was left as it is
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DamagedAudio {
     pub episode_title: String,
     pub audio_filename: String,
+    pub kind: DamageKind,
     /// Never [`DamageRemedy::Repairing`]: repaired audio is not damaged
     pub remedy: DamageRemedy,
 }
@@ -145,11 +156,13 @@ impl DamagedAudio {
     pub fn new(
         episode_title: impl Into<String>,
         audio_filename: impl Into<String>,
+        kind: DamageKind,
         remedy: DamageRemedy,
     ) -> Self {
         Self {
             episode_title: episode_title.into(),
             audio_filename: audio_filename.into(),
+            kind,
             remedy,
         }
     }
@@ -686,35 +699,40 @@ async fn verify_stored_audio(
 
     for target in targets {
         let stored = &target.stored;
-        let Some(recorded_hash) = &stored.content_hash else {
-            continue;
-        };
 
-        // Hashing reads the whole file, which takes a while on a network
-        // share.
-        reporter.report(ProgressEvent::VerifyingStoredAudio {
-            audio_filename: stored.audio_filename.clone(),
-        });
-        let audio_path = output_dir.join(&stored.audio_filename);
-        let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
-            .await
-            .expect("hashing a file does not panic");
-
-        let actual_hash = match actual_hash {
-            Ok(hash) => hash,
-            // A missing file has nothing left to verify.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                reporter.report(ProgressEvent::StoredAudioUnverifiable {
-                    audio_filename: stored.audio_filename.clone(),
-                    error: e.to_string(),
-                });
+        // Missing audio is told by the directory listing. A file the listing
+        // shows but that cannot be read is reported as unverifiable instead:
+        // a share may fail to open a name it lists, and taking that for a
+        // missing file would download it again for nothing.
+        let kind = if !stored.audio_listed {
+            DamageKind::Missing
+        } else {
+            let Some(recorded_hash) = &stored.content_hash else {
                 continue;
+            };
+
+            // Hashing reads the whole file, which takes a while on a network
+            // share.
+            reporter.report(ProgressEvent::VerifyingStoredAudio {
+                audio_filename: stored.audio_filename.clone(),
+            });
+            let audio_path = output_dir.join(&stored.audio_filename);
+            let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
+                .await
+                .expect("hashing a file does not panic");
+
+            match actual_hash {
+                Ok(hash) if &hash == recorded_hash => continue,
+                Ok(_) => DamageKind::Mismatch,
+                Err(e) => {
+                    reporter.report(ProgressEvent::StoredAudioUnverifiable {
+                        audio_filename: stored.audio_filename.clone(),
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
             }
         };
-        if &actual_hash == recorded_hash {
-            continue;
-        }
 
         let stored_extension = Path::new(&stored.audio_filename)
             .extension()
@@ -730,10 +748,19 @@ async fn verify_stored_audio(
             Some(_) if repair => DamageRemedy::Repairing,
             Some(_) => DamageRemedy::RepairAvailable,
         };
-        reporter.report(ProgressEvent::StoredAudioMismatch {
-            episode_title: stored.title.clone(),
-            audio_filename: stored.audio_filename.clone(),
-            remedy,
+        let episode_title = stored.title.clone();
+        let audio_filename = stored.audio_filename.clone();
+        reporter.report(match kind {
+            DamageKind::Missing => ProgressEvent::StoredAudioMissing {
+                episode_title,
+                audio_filename,
+                remedy,
+            },
+            _ => ProgressEvent::StoredAudioMismatch {
+                episode_title,
+                audio_filename,
+                remedy,
+            },
         });
 
         if let Some(guid) = target
@@ -763,11 +790,12 @@ async fn verify_stored_audio(
                     ..PlannedDownload::new(episode.clone(), stored.stem(), stored_extension)
                 })
             }
-            _ => verification.damaged.push(DamagedAudio {
-                episode_title: stored.title.clone(),
-                audio_filename: stored.audio_filename.clone(),
+            _ => verification.damaged.push(DamagedAudio::new(
+                stored.title.clone(),
+                stored.audio_filename.clone(),
+                kind,
                 remedy,
-            }),
+            )),
         }
     }
 
@@ -1370,10 +1398,18 @@ mod tests {
     }
 
     fn damage(remedy: DamageRemedy) -> DamagedAudio {
-        DamagedAudio {
-            episode_title: "SFT Bits: Sega Nomad".to_string(),
-            audio_filename: format!("{}.mp3", NOMAD_STEM),
+        DamagedAudio::new(
+            "SFT Bits: Sega Nomad",
+            format!("{}.mp3", NOMAD_STEM),
+            DamageKind::Mismatch,
             remedy,
+        )
+    }
+
+    fn missing(remedy: DamageRemedy) -> DamagedAudio {
+        DamagedAudio {
+            kind: DamageKind::Missing,
+            ..damage(remedy)
         }
     }
 
@@ -1476,19 +1512,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_skips_verification_when_audio_is_missing() {
+    async fn sync_reports_missing_audio_of_colliding_episode() {
         let dir = tempdir().unwrap();
         store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
         std::fs::remove_file(dir.path().join(format!("{}.mp3", NOMAD_STEM))).unwrap();
 
         let (result, events) = sync_recording(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL]).await;
 
-        assert!(result.damaged.is_empty());
+        assert_eq!(result.damaged, vec![missing(DamageRemedy::RepairAvailable)]);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProgressEvent::StoredAudioMissing {
+                remedy: DamageRemedy::RepairAvailable,
+                ..
+            }
+        )));
+        // The listing already shows the file is gone; there is nothing to
+        // read.
+        assert!(verifying_events(&events).is_empty());
         assert!(
             !events
                 .iter()
                 .any(|event| matches!(event, ProgressEvent::StoredAudioUnverifiable { .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn sync_verify_reports_missing_audio_without_recorded_hash() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        let metadata_path = dir.path().join(format!("{}.json", NOMAD_STEM));
+        let mut metadata = crate::metadata::read_episode_metadata(&metadata_path).unwrap();
+        metadata.content_hash = None;
+        metadata.stage(&metadata_path).unwrap().commit().unwrap();
+        std::fs::remove_file(dir.path().join(format!("{}.mp3", NOMAD_STEM))).unwrap();
+
+        let (result, _) = sync_checking(dir.path(), &[NOMAD_REUPLOAD], AudioCheck::Verify).await;
+
+        assert_eq!(result.damaged, vec![missing(DamageRemedy::RepairAvailable)]);
+    }
+
+    #[tokio::test]
+    async fn sync_repair_downloads_missing_audio_again() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        let audio = dir.path().join(format!("{}.mp3", NOMAD_STEM));
+        std::fs::remove_file(&audio).unwrap();
+
+        let (result, _) = sync_checking(dir.path(), &[NOMAD_REUPLOAD], AudioCheck::Repair).await;
+
+        assert_eq!(result.repaired, 1);
+        assert!(result.damaged.is_empty());
+        assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
     }
 
     #[tokio::test]

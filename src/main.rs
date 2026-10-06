@@ -14,8 +14,8 @@ use console::Emoji;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use podpull::{
-    AudioCheck, DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter, ReqwestClient,
-    SharedProgressReporter, SyncOptions, SyncResult, sync_podcast,
+    AudioCheck, DamageKind, DamageRemedy, NoopReporter, ProgressEvent, ProgressReporter,
+    ReqwestClient, SharedProgressReporter, SyncOptions, SyncResult, sync_podcast,
 };
 
 // Emoji with fallback for terminals without Unicode support
@@ -323,7 +323,25 @@ impl ProgressReporter for IndicatifReporter {
             } => {
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    damage_message(&episode_title, &audio_filename, remedy).yellow()
+                    damage_message(
+                        &episode_title,
+                        &audio_filename,
+                        DamageKind::Mismatch,
+                        remedy
+                    )
+                    .yellow()
+                ));
+            }
+
+            ProgressEvent::StoredAudioMissing {
+                episode_title,
+                audio_filename,
+                remedy,
+            } => {
+                let _ = self.multi.println(format!(
+                    "{WARNING}{}",
+                    damage_message(&episode_title, &audio_filename, DamageKind::Missing, remedy)
+                        .yellow()
                 ));
             }
 
@@ -456,27 +474,42 @@ fn unverifiable_audio_message(audio_filename: &str, error: &str) -> String {
     )
 }
 
-fn damage_message(episode_title: &str, audio_filename: &str, remedy: DamageRemedy) -> String {
+fn damage_message(
+    episode_title: &str,
+    audio_filename: &str,
+    kind: DamageKind,
+    remedy: DamageRemedy,
+) -> String {
+    // Missing audio leaves only its metadata to delete.
+    let (problem, files) = match kind {
+        DamageKind::Missing => ("is missing", "its .json file"),
+        _ => (
+            "does not match the hash recorded when it was downloaded",
+            "it and its .json file",
+        ),
+    };
     let remedy = match remedy {
-        DamageRemedy::Repairing => "downloading it again",
+        DamageRemedy::Repairing => "downloading it again".to_string(),
         DamageRemedy::RepairAvailable => {
-            "run with --repair to download it again, or delete it and its .json file"
+            format!(
+                "run with --repair to download it again, or delete {}",
+                files
+            )
         }
-        DamageRemedy::NoFeedEpisode => {
-            "it cannot be matched to an episode in the feed, so it cannot be downloaded \
-             again and was left untouched"
-        }
-        DamageRemedy::EnclosureFormatChanged => {
-            "the feed now offers another audio format, so delete it and its .json file \
-             to download it again"
-        }
+        DamageRemedy::NoFeedEpisode => "it cannot be matched to an episode in the feed, so it \
+             cannot be downloaded again and was left untouched"
+            .to_string(),
+        DamageRemedy::EnclosureFormatChanged => format!(
+            "the feed now offers another audio format, so delete {} to download it again",
+            files
+        ),
         // A remedy added to the library after this message only lacks its
         // explanation.
-        _ => "see the podpull documentation",
+        _ => "see the podpull documentation".to_string(),
     };
     format!(
-        "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded; {}",
-        episode_title, audio_filename, remedy
+        "Audio of \"{}\" ({}) {}; {}",
+        episode_title, audio_filename, problem, remedy
     )
 }
 
@@ -604,6 +637,7 @@ fn write_problem_lists(result: &SyncResult, out: &mut impl Write) -> std::io::Re
                 damage_message(
                     &damaged.episode_title,
                     &damaged.audio_filename,
+                    damaged.kind,
                     damaged.remedy
                 )
             )?;
@@ -699,7 +733,41 @@ mod tests {
     }
 
     fn damage(remedy: DamageRemedy) -> String {
-        damage_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3", remedy)
+        damage_message(
+            "Sega Nomad",
+            "2024-12-19-Sega Nomad.mp3",
+            DamageKind::Mismatch,
+            remedy,
+        )
+    }
+
+    fn missing(remedy: DamageRemedy) -> String {
+        damage_message(
+            "Sega Nomad",
+            "2024-12-19-Sega Nomad.mp3",
+            DamageKind::Missing,
+            remedy,
+        )
+    }
+
+    #[test]
+    fn damage_message_names_missing_audio() {
+        assert_eq!(
+            missing(DamageRemedy::RepairAvailable),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) is missing; run with \
+             --repair to download it again, or delete its .json file"
+        );
+        assert_eq!(
+            missing(DamageRemedy::EnclosureFormatChanged),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) is missing; the feed \
+             now offers another audio format, so delete its .json file to download it again"
+        );
+        assert_eq!(
+            missing(DamageRemedy::NoFeedEpisode),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) is missing; it cannot \
+             be matched to an episode in the feed, so it cannot be downloaded again and \
+             was left untouched"
+        );
     }
 
     #[test]
@@ -766,6 +834,7 @@ mod tests {
                 DamagedAudio::new(
                     format!("Damaged {}", n),
                     format!("2024-01-0{}-Damaged.mp3", n + 1),
+                    DamageKind::Mismatch,
                     DamageRemedy::RepairAvailable,
                 )
             })
