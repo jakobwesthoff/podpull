@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--verify` and `--repair` show which stored audio file they check, how many of all files that is, and how far hashing the file has got, instead of a progress bar that stays at the end of the directory scan
+
 ## [2.0.0] - 2026-10-06
 
 ### Added

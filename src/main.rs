@@ -292,9 +292,35 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            ProgressEvent::VerifyingStoredAudio { audio_filename } => {
+            ProgressEvent::VerifyingStoredAudio {
+                audio_filename,
+                position,
+                total,
+            } => {
+                // Hashing a file on a network share takes a while, so the
+                // main line shows which file of how many and how far it is.
+                let check_style = ProgressStyle::default_bar()
+                    .template(
+                        "{spinner:.green} {prefix} [{bar:30.cyan/blue}] {bytes}/{total_bytes} {wide_msg}",
+                    )
+                    .unwrap()
+                    .progress_chars("█▓░");
+                // Every setter may redraw the line, so the bytes of the
+                // previous file go first and the new style last.
+                self.main_bar.set_position(0);
+                self.main_bar.set_length(0);
                 self.main_bar
-                    .set_message(format!("{SEARCH}Checking {}...", audio_filename.cyan()));
+                    .set_prefix(format!("{SEARCH}{}", checking_prefix(position, total)));
+                self.main_bar.set_message(audio_filename.cyan().to_string());
+                self.main_bar.set_style(check_style);
+            }
+
+            ProgressEvent::HashingProgress {
+                bytes_hashed,
+                total_bytes,
+            } => {
+                self.main_bar.set_length(total_bytes);
+                self.main_bar.set_position(bytes_hashed);
             }
 
             ProgressEvent::StoredAudioUnverifiable {
@@ -366,6 +392,15 @@ fn completion_summary(result: &SyncResult) -> String {
     }
 
     parts.join(", ")
+}
+
+/// Which of the files a check hashes is being read
+fn checking_prefix(position: usize, total: usize) -> String {
+    format!(
+        "Checking stored audio [{}/{}]",
+        position.to_string().cyan(),
+        total.to_string().cyan()
+    )
 }
 
 fn already_stored_message(episode_title: &str, audio_filename: &str) -> String {
@@ -703,6 +738,12 @@ mod tests {
         });
         reporter.report(ProgressEvent::VerifyingStoredAudio {
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+            position: 1,
+            total: 1,
+        });
+        reporter.report(ProgressEvent::HashingProgress {
+            bytes_hashed: 512,
+            total_bytes: 1024,
         });
         reporter.report(ProgressEvent::StoredAudioUnverifiable {
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
@@ -800,6 +841,13 @@ mod tests {
             already_stored_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
             "\"Sega Nomad\" is identical to 2024-12-19-Sega Nomad.mp3; recorded its GUID there"
         );
+    }
+
+    #[test]
+    fn checking_prefix_counts_the_checked_files() {
+        colored::control::set_override(false);
+
+        assert_eq!(checking_prefix(12, 162), "Checking stored audio [12/162]");
     }
 
     #[test]

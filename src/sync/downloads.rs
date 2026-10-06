@@ -364,7 +364,7 @@ pub(super) async fn stored_audio_still_matches(
     content_hash: &str,
 ) -> bool {
     let audio_path = output_dir.join(&stored.audio_filename);
-    let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
+    let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path, |_, _| {}))
         .await
         .expect("hashing a file does not panic");
     actual_hash.is_ok_and(|hash| hash == content_hash)

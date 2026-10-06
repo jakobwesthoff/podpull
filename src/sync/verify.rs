@@ -46,6 +46,14 @@ pub(super) async fn verify_stored_audio(
         unverifiable: Vec::new(),
     };
 
+    // Only listed audio with a recorded hash is read; the counter tells the
+    // user how far through the archive the check is.
+    let total = targets
+        .iter()
+        .filter(|target| target.stored.audio_listed && target.stored.content_hash.is_some())
+        .count();
+    let mut position = 0;
+
     for target in targets {
         let stored = &target.stored;
 
@@ -61,13 +69,30 @@ pub(super) async fn verify_stored_audio(
 
             // Hashing reads the whole file, which takes a while on a network
             // share.
+            position += 1;
             reporter.report(ProgressEvent::VerifyingStoredAudio {
                 audio_filename: stored.audio_filename.clone(),
+                position,
+                total,
             });
+
+            // The file is read on a blocking thread, which the borrowed
+            // reporter cannot go to, so the progress comes back through a
+            // channel. It closes once hashing ends and drops the sender.
             let audio_path = output_dir.join(&stored.audio_filename);
-            let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
-                .await
-                .expect("hashing a file does not panic");
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+            let hashing = tokio::task::spawn_blocking(move || {
+                hash_file(&audio_path, |bytes_hashed, total_bytes| {
+                    let _ = progress_tx.send((bytes_hashed, total_bytes));
+                })
+            });
+            while let Some((bytes_hashed, total_bytes)) = progress_rx.recv().await {
+                reporter.report(ProgressEvent::HashingProgress {
+                    bytes_hashed,
+                    total_bytes,
+                });
+            }
+            let actual_hash = hashing.await.expect("hashing a file does not panic");
 
             match actual_hash {
                 Ok(hash) if &hash == recorded_hash => {

@@ -839,7 +839,7 @@ mod tests {
         events
             .iter()
             .filter_map(|event| match event {
-                ProgressEvent::VerifyingStoredAudio { audio_filename } => {
+                ProgressEvent::VerifyingStoredAudio { audio_filename, .. } => {
                     Some(audio_filename.clone())
                 }
                 _ => None,
@@ -1150,7 +1150,7 @@ mod tests {
         .unwrap();
         assert_eq!(metadata.guid.as_deref(), Some("nomad-reupload"));
         assert!(metadata.additional_guids.is_empty());
-        assert_eq!(metadata.content_hash, hash_file(&audio).ok());
+        assert_eq!(metadata.content_hash, hash_file(&audio, |_, _| {}).ok());
         assert_eq!(
             mismatch_events(&events),
             vec![(
@@ -1514,6 +1514,60 @@ mod tests {
             vec![format!("{}.mp3", NOMAD_STEM)]
         );
         assert_eq!(std::fs::read(&audio).unwrap(), b"interleaved audio");
+    }
+
+    #[tokio::test]
+    async fn sync_verify_reports_which_file_it_hashes_and_how_far() {
+        let dir = tempdir().unwrap();
+        let other_stem = "2024-01-01-Other";
+        let other = FeedItem {
+            title: "Other",
+            pub_date: "Mon, 01 Jan 2024 12:00:00 GMT",
+            guid: "other",
+        };
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        store_episode(dir.path(), other_stem, &other, b"other audio");
+        // Missing audio needs no reading, so it is not counted.
+        let gone_stem = "2024-01-02-Gone";
+        let gone = FeedItem {
+            title: "Gone",
+            pub_date: "Tue, 02 Jan 2024 12:00:00 GMT",
+            guid: "gone",
+        };
+        store_episode(dir.path(), gone_stem, &gone, b"gone audio");
+        std::fs::remove_file(dir.path().join(format!("{}.mp3", gone_stem))).unwrap();
+
+        let (_, events) = sync_checking(
+            dir.path(),
+            &[NOMAD_REUPLOAD, other, gone],
+            AudioCheck::Verify,
+        )
+        .await;
+
+        let progress: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                ProgressEvent::VerifyingStoredAudio {
+                    audio_filename,
+                    position,
+                    total,
+                } => Some(format!("{} {}/{}", audio_filename, position, total)),
+                ProgressEvent::HashingProgress {
+                    bytes_hashed,
+                    total_bytes,
+                } => Some(format!("{}/{} bytes", bytes_hashed, total_bytes)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            progress,
+            vec![
+                format!("{}.mp3 1/2", other_stem),
+                "11/11 bytes".to_string(),
+                format!("{}.mp3 2/2", NOMAD_STEM),
+                "11/11 bytes".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]

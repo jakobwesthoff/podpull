@@ -97,7 +97,16 @@ pub enum ProgressEvent {
 
     /// An existing audio file is about to be hashed to check it against the
     /// hash recorded when it was downloaded
-    VerifyingStoredAudio { audio_filename: String },
+    VerifyingStoredAudio {
+        audio_filename: String,
+        /// Number of this file among the files the check hashes, from 1
+        position: usize,
+        /// Number of files the check hashes
+        total: usize,
+    },
+
+    /// Bytes of the stored audio being checked that are hashed so far
+    HashingProgress { bytes_hashed: u64, total_bytes: u64 },
 
     /// An existing audio file could not be read to check it
     StoredAudioUnverifiable {
@@ -213,6 +222,13 @@ mod tests {
 
         reporter.report(ProgressEvent::VerifyingStoredAudio {
             audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
+            position: 1,
+            total: 2,
+        });
+
+        reporter.report(ProgressEvent::HashingProgress {
+            bytes_hashed: 512,
+            total_bytes: 1024,
         });
 
         reporter.report(ProgressEvent::StoredAudioUnverifiable {
