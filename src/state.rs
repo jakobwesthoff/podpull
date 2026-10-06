@@ -42,7 +42,7 @@ impl OutputState {
         claimed_keys: HashSet<String>,
         stored_episodes: HashMap<String, StoredEpisode>,
     ) -> Self {
-        // Before podpull 1.2.0, colliding downloads could leave several
+        // Before podpull 2.0.0, colliding downloads could leave several
         // files recording one GUID, so a GUID maps to all of them. Filename
         // order keeps the result independent of the order of the scan.
         let mut by_filename: Vec<_> = stored_episodes.iter().collect();
@@ -1063,7 +1063,7 @@ mod tests {
             additional_guids: vec!["guid-shared".to_string()],
             ..stored("2024-01-01-Adopted", "Episode", "guid-adopted")
         };
-        // Before podpull 1.2.0, colliding downloads could leave two files
+        // Before podpull 2.0.0, colliding downloads could leave two files
         // recording one GUID.
         let state = state_with_stored(vec![
             adopted,

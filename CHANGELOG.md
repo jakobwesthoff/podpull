@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-10-06
+## [2.0.0] - 2026-10-06
 
 ### Added
 
@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--verify` option: checks every downloaded audio file against its recorded hash and lists mismatched or missing audio; reads the whole archive
 - `--repair` option: like `--verify`, and downloads damaged or missing episodes again under their existing filenames, provided they are still in the feed in the same audio format
 - The sync summary lists repaired episodes and episodes whose audio was already stored
-- Exit code 2 when some downloads failed, damaged or missing audio was found, or a warning was reported, such as a leftover `.partial` file that cannot be removed or unreadable metadata. Such a file keeps every run at exit code 2 until it is dealt with
 
 ### Fixed
 
@@ -32,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Exit codes:** a run in which some downloads failed exits with code 2 instead of 0. Code 2 also reports damaged or missing audio and warnings, such as a leftover `.partial` file that cannot be removed or unreadable metadata; such a file keeps every run at code 2 until it is dealt with. Code 1 still means downloads failed and nothing was downloaded, repaired or recorded as already stored
 - Downloaded audio, episode metadata and `podcast.json` are written to `.partial` files, synced to disk and then renamed into place. On filesystems without a full flush to the drive, such as SMB shares mounted on macOS, the sync is a plain `fsync`
 - Episode metadata files that hold no valid metadata are reported as a warning with the reason instead of being skipped silently. A metadata file that cannot be read from disk at all stops the sync with an error
 - Leftover `.partial` files that cannot be removed are reported, and a download into such a path fails with a message to delete the file
