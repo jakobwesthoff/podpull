@@ -21,7 +21,7 @@ use podpull::{
 // Emoji with fallback for terminals without Unicode support
 static MICROPHONE: Emoji<'_, '_> = Emoji("🎙️  ", "");
 static GLOBE: Emoji<'_, '_> = Emoji("🌐 ", "[w] ");
-static COG: Emoji<'_, '_> = Emoji("⚙️  ", "[*] ");
+static SCROLL: Emoji<'_, '_> = Emoji("📜 ", "[*] ");
 static SEARCH: Emoji<'_, '_> = Emoji("🔍 ", "[~] ");
 static HEADPHONES: Emoji<'_, '_> = Emoji("🎧 ", "[i] ");
 static SAVING: Emoji<'_, '_> = Emoji("💾 ", "[v] ");
@@ -137,7 +137,7 @@ impl ProgressReporter for IndicatifReporter {
 
             ProgressEvent::ParsingFeed { source } => {
                 self.main_bar
-                    .set_message(format!("{COG}Parsing feed: {}", source.cyan()));
+                    .set_message(format!("{SCROLL}Parsing feed: {}", source.cyan()));
             }
 
             ProgressEvent::ScanningDirectory {
@@ -841,6 +841,32 @@ mod tests {
             already_stored_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
             "\"Sega Nomad\" is identical to 2024-12-19-Sega Nomad.mp3; recorded its GUID there"
         );
+    }
+
+    #[test]
+    fn progress_line_emoji_carry_no_variation_selector() {
+        // indicatif pads a progress line to the terminal width, but counts a
+        // character followed by U+FE0F one column narrower than the terminal
+        // draws it. The line then wraps, and every redraw leaves the previous
+        // frame behind.
+        let progress_emoji = [
+            ("SAVING", SAVING),
+            ("GLOBE", GLOBE),
+            ("SCROLL", SCROLL),
+            ("SEARCH", SEARCH),
+            ("HEADPHONES", HEADPHONES),
+            ("SUCCESS", SUCCESS),
+            ("FAILURE", FAILURE),
+            ("BROOM", BROOM),
+        ];
+
+        let with_selector: Vec<_> = progress_emoji
+            .iter()
+            .filter(|(_, emoji)| emoji.0.contains('\u{FE0F}'))
+            .map(|(name, _)| *name)
+            .collect();
+
+        assert!(with_selector.is_empty(), "{:?}", with_selector);
     }
 
     #[test]
