@@ -327,57 +327,12 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            ProgressEvent::SyncCompleted {
-                downloaded_count,
-                existing_count,
-                limited_count,
-                failed_count,
-                not_started_count,
-                damaged_count,
-                adopted_count,
-            } => {
+            event @ ProgressEvent::SyncCompleted { .. } => {
                 self.main_bar.finish_and_clear();
-
-                let mut parts = vec![
-                    format!("{} downloaded", downloaded_count.to_string().green().bold()),
-                    format!("{} existing", existing_count.to_string().yellow()),
-                ];
-
-                if adopted_count > 0 {
-                    parts.push(format!(
-                        "{} already stored",
-                        adopted_count.to_string().yellow()
-                    ));
-                }
-
-                if limited_count > 0 {
-                    parts.push(format!("{} limited", limited_count.to_string().cyan()));
-                }
-
-                if not_started_count > 0 {
-                    parts.push(format!(
-                        "{} not started",
-                        not_started_count.to_string().yellow()
-                    ));
-                }
-
-                parts.push(if failed_count > 0 {
-                    format!("{} failed", failed_count.to_string().red().bold())
-                } else {
-                    format!("{} failed", failed_count.to_string().green())
-                });
-
-                if damaged_count > 0 {
-                    parts.push(format!(
-                        "{} damaged",
-                        damaged_count.to_string().red().bold()
-                    ));
-                }
-
                 println!(
                     "\n{PARTY}{} {}",
                     "Sync complete:".bold().green(),
-                    parts.join(", ")
+                    completion_summary(&event)
                 );
             }
 
@@ -385,6 +340,65 @@ impl ProgressReporter for IndicatifReporter {
             _ => {}
         }
     }
+}
+
+/// The counts of a finished sync, for its closing line
+fn completion_summary(event: &ProgressEvent) -> String {
+    let ProgressEvent::SyncCompleted {
+        downloaded_count,
+        existing_count,
+        repaired_count,
+        adopted_count,
+        limited_count,
+        failed_count,
+        not_started_count,
+        damaged_count,
+    } = *event
+    else {
+        return String::new();
+    };
+
+    let mut parts = vec![
+        format!("{} downloaded", downloaded_count.to_string().green().bold()),
+        format!("{} existing", existing_count.to_string().yellow()),
+    ];
+
+    if repaired_count > 0 {
+        parts.push(format!("{} repaired", repaired_count.to_string().green()));
+    }
+
+    if adopted_count > 0 {
+        parts.push(format!(
+            "{} already stored",
+            adopted_count.to_string().yellow()
+        ));
+    }
+
+    if limited_count > 0 {
+        parts.push(format!("{} limited", limited_count.to_string().cyan()));
+    }
+
+    if not_started_count > 0 {
+        parts.push(format!(
+            "{} not started",
+            not_started_count.to_string().yellow()
+        ));
+    }
+
+    parts.push(if failed_count > 0 {
+        format!("{} failed", failed_count.to_string().red().bold())
+    } else {
+        format!("{} failed", failed_count.to_string().green())
+    });
+
+    if damaged_count > 0 {
+        parts.push(format!(
+            "{} damaged",
+            damaged_count.to_string().red().bold()
+        ));
+    }
+
+    parts.join(", ")
 }
 
 fn already_stored_message(episode_title: &str, audio_filename: &str) -> String {
@@ -561,7 +575,8 @@ async fn main() -> Result<()> {
 /// 1 when downloads failed and none succeeded; 2 when some downloads failed
 /// or damaged audio was found but the run got something done.
 fn exit_code(result: &SyncResult) -> i32 {
-    if result.failed > 0 && result.downloaded == 0 {
+    let succeeded = result.downloaded + result.repaired + result.adopted;
+    if result.failed > 0 && succeeded == 0 {
         1
     } else if result.failed > 0 || !result.damaged.is_empty() {
         2
@@ -767,6 +782,38 @@ mod tests {
     #[test]
     fn exit_code_is_one_when_nothing_could_be_downloaded() {
         assert_eq!(exit_code(&result(0, 2, 0)), 1);
+    }
+
+    #[test]
+    fn exit_code_counts_repairs_and_recorded_guids_as_success() {
+        let mut repaired = result(0, 1, 0);
+        repaired.repaired = 1;
+        let mut adopted = result(0, 1, 0);
+        adopted.adopted = 1;
+
+        assert_eq!(exit_code(&repaired), 2);
+        assert_eq!(exit_code(&adopted), 2);
+    }
+
+    #[test]
+    fn completion_summary_lists_repairs_and_recorded_guids() {
+        colored::control::set_override(false);
+
+        let summary = completion_summary(&ProgressEvent::SyncCompleted {
+            downloaded_count: 4,
+            existing_count: 5,
+            repaired_count: 2,
+            adopted_count: 1,
+            limited_count: 0,
+            failed_count: 0,
+            not_started_count: 0,
+            damaged_count: 0,
+        });
+
+        assert_eq!(
+            summary,
+            "4 downloaded, 5 existing, 2 repaired, 1 already stored, 0 failed"
+        );
     }
 
     #[test]

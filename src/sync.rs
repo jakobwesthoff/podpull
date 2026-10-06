@@ -93,8 +93,10 @@ impl Default for SyncOptions {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct SyncResult {
-    /// Number of episodes successfully downloaded
+    /// Number of new episodes successfully downloaded
     pub downloaded: usize,
+    /// Number of episodes whose damaged audio was downloaded again
+    pub repaired: usize,
     /// Number of episodes skipped (already present)
     pub skipped: usize,
     /// Number of episodes that failed to download
@@ -238,6 +240,7 @@ pub async fn sync_podcast<C: HttpClient>(
     reporter.report(ProgressEvent::SyncCompleted {
         downloaded_count: downloaded,
         existing_count: existing,
+        repaired_count: totals.repaired,
         limited_count: limited,
         failed_count: failed,
         not_started_count: totals.not_started,
@@ -245,12 +248,16 @@ pub async fn sync_podcast<C: HttpClient>(
         adopted_count: totals.adopted,
     });
 
-    if downloaded == 0 && failed > 0 && !options.continue_on_error {
+    // Recording the GUID of audio already stored completes an episode as
+    // much as downloading it does.
+    let succeeded = downloaded + totals.repaired + totals.adopted;
+    if succeeded == 0 && failed > 0 && !options.continue_on_error {
         return Err(SyncError::AllDownloadsFailed);
     }
 
     Ok(SyncResult {
         downloaded,
+        repaired: totals.repaired,
         skipped: existing,
         failed,
         failed_episodes: failed_eps,
@@ -292,6 +299,8 @@ async fn load_podcast<C: HttpClient>(
 /// What became of one planned download
 enum DownloadOutcome {
     Downloaded,
+    /// Damaged audio of a stored episode was downloaded again
+    Repaired,
     /// The audio was already stored, so only its GUID was recorded
     AlreadyStored,
     Failed {
@@ -304,6 +313,7 @@ enum DownloadOutcome {
 /// Results of all downloads of one sync run
 struct DownloadTotals {
     downloaded: usize,
+    repaired: usize,
     /// Failed downloads as (episode title, error message) pairs
     failed_episodes: Vec<(String, String)>,
     /// Episodes skipped because a failure stopped the run
@@ -396,6 +406,9 @@ async fn download_all<C: HttpClient>(
                     .await;
 
                     let error = match attempt {
+                        Ok(Ok(Placed::Downloaded)) if planned.replaces_existing => {
+                            return (title, DownloadOutcome::Repaired);
+                        }
                         Ok(Ok(Placed::Downloaded)) => return (title, DownloadOutcome::Downloaded),
                         Ok(Ok(Placed::AlreadyStored)) => {
                             return (title, DownloadOutcome::AlreadyStored);
@@ -425,6 +438,7 @@ async fn download_all<C: HttpClient>(
 
     let mut totals = DownloadTotals {
         downloaded: 0,
+        repaired: 0,
         failed_episodes: Vec::new(),
         not_started: 0,
         adopted: 0,
@@ -432,6 +446,7 @@ async fn download_all<C: HttpClient>(
     for (title, outcome) in outcomes {
         match outcome {
             DownloadOutcome::Downloaded => totals.downloaded += 1,
+            DownloadOutcome::Repaired => totals.repaired += 1,
             DownloadOutcome::AlreadyStored => totals.adopted += 1,
             DownloadOutcome::Failed { error } => totals.failed_episodes.push((title, error)),
             DownloadOutcome::NotStarted => totals.not_started += 1,
@@ -1606,10 +1621,19 @@ mod tests {
         let (result, events) =
             sync_repairing(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL], None).await;
 
-        assert_eq!(result.downloaded, 2);
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.repaired, 1);
         assert_eq!(result.skipped, 0);
         assert_eq!(result.failed, 0);
         assert!(result.damaged.is_empty());
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProgressEvent::SyncCompleted {
+                downloaded_count: 1,
+                repaired_count: 1,
+                ..
+            }
+        )));
         assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
         let metadata = crate::metadata::read_episode_metadata(
             &dir.path().join(format!("{}.json", NOMAD_STEM)),
@@ -1647,7 +1671,8 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.downloaded, 2);
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.repaired, 1);
         assert_eq!(result.failed, 0);
         assert!(!recorded_episodes(dir.path()).contains_key("older"));
         // The repair is reported apart from the new episodes, so the limit
@@ -1746,7 +1771,8 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.downloaded, 4);
+        assert_eq!(result.downloaded, 2);
+        assert_eq!(result.repaired, 2);
         assert_eq!(result.skipped, 0);
         assert!(result.damaged.is_empty());
     }
@@ -2026,7 +2052,8 @@ mod tests {
 
         let (result, _) = sync_checking(dir.path(), &[NOMAD_REUPLOAD], AudioCheck::Repair).await;
 
-        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(result.repaired, 1);
         assert!(result.damaged.is_empty());
         assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
     }
@@ -2044,7 +2071,8 @@ mod tests {
 
         let (second, _) = sync_checking(dir.path(), &feed, AudioCheck::Repair).await;
 
-        assert_eq!(second.downloaded, 1);
+        assert_eq!(second.downloaded, 0);
+        assert_eq!(second.repaired, 1);
         assert!(second.damaged.is_empty());
         assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
     }
@@ -2359,6 +2387,36 @@ mod tests {
             metadata.additional_guids,
             vec!["nomad-reissued".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn sync_counts_recorded_guids_as_success_without_continue_on_error() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        let other = FeedItem {
+            title: "Other",
+            pub_date: "Fri, 20 Dec 2024 08:00:00 GMT",
+            guid: "other",
+        };
+        // The scan cannot remove a directory in the way of the partial file,
+        // so the other episode fails.
+        std::fs::create_dir(dir.path().join("2024-12-20-Other.mp3.partial")).unwrap();
+
+        let result = sync_podcast(
+            &client_for(&[REISSUED, other]),
+            "https://example.com/feed.xml",
+            dir.path(),
+            &SyncOptions {
+                continue_on_error: false,
+                ..Default::default()
+            },
+            NoopReporter::shared(),
+        )
+        .await
+        .expect("recording the re-issued GUID is a success");
+
+        assert_eq!(result.adopted, 1);
+        assert_eq!(result.failed, 1);
     }
 
     #[tokio::test]

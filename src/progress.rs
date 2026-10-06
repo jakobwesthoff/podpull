@@ -136,9 +136,12 @@ pub enum ProgressEvent {
 
     /// Sync operation completed
     SyncCompleted {
+        /// New episodes downloaded
         downloaded_count: usize,
         /// Episodes already present in output directory
         existing_count: usize,
+        /// Episodes whose damaged audio was downloaded again
+        repaired_count: usize,
         /// New episodes not downloaded due to --limit
         limited_count: usize,
         failed_count: usize,
@@ -282,6 +285,7 @@ mod tests {
             not_started_count: 0,
             damaged_count: 0,
             adopted_count: 0,
+            repaired_count: 0,
         });
 
         reporter.report(ProgressEvent::EpisodeAlreadyStored {
