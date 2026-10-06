@@ -77,9 +77,12 @@ pub async fn download_episode<C: HttpClient>(
     // Create partial file path
     let partial_path = PathBuf::from(format!("{}.partial", output_path.display()));
 
-    // Create partial output file
+    // Within a sync, the directory scan removes leftover partial files before
+    // any download starts, so an existing one belongs to another download
+    // targeting the same path. Opening exclusively turns such a conflict into
+    // an error instead of two downloads interleaving their bytes in one file.
     let mut file =
-        File::create(&partial_path)
+        File::create_new(&partial_path)
             .await
             .map_err(|e| DownloadError::FileCreateFailed {
                 path: partial_path.clone(),
@@ -278,5 +281,48 @@ mod tests {
             DownloadError::HttpStatus { status, .. } => assert_eq!(status, 404),
             _ => panic!("Expected HttpStatus error"),
         }
+    }
+
+    #[tokio::test]
+    async fn download_refuses_to_share_a_partial_file() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+        let partial_path = dir.path().join("episode.mp3.partial");
+
+        // Another download already writes to this partial file. Truncating
+        // and writing into it would interleave the bytes of both downloads.
+        std::fs::write(&partial_path, b"bytes of another download").unwrap();
+
+        let client = MockHttpClient {
+            response_data: b"test audio content".to_vec(),
+            status: 200,
+        };
+        let context = DownloadContext {
+            download_id: 0,
+            episode_index: 0,
+            total_to_download: 1,
+        };
+
+        let result = download_episode(
+            &client,
+            &make_episode(),
+            &output_path,
+            &context,
+            &NoopReporter::shared(),
+        )
+        .await;
+
+        match result.unwrap_err() {
+            DownloadError::FileCreateFailed { path, source } => {
+                assert_eq!(path, partial_path);
+                assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+            }
+            other => panic!("Expected FileCreateFailed, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(&partial_path).unwrap(),
+            b"bytes of another download"
+        );
+        assert!(!output_path.exists());
     }
 }
