@@ -82,17 +82,17 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let state = scan_output_dir(output_dir, &reporter)?;
 
     // Report if any partial files were cleaned up
-    if state.partial_files_cleaned > 0 {
+    if state.partial_files_cleaned() > 0 {
         reporter.report(ProgressEvent::PartialFilesCleanedUp {
-            count: state.partial_files_cleaned,
+            count: state.partial_files_cleaned(),
         });
     }
 
-    for path in &state.stuck_partial_files {
+    for path in state.stuck_partial_files() {
         reporter.report(ProgressEvent::PartialFileStuck { path: path.clone() });
     }
 
-    for unreadable in &state.unreadable_metadata {
+    for unreadable in state.unreadable_metadata() {
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: unreadable.path.clone(),
             error: unreadable.error.clone(),
@@ -422,12 +422,14 @@ async fn verify_collided_audio(
         if !verified.insert(key) {
             continue;
         }
-        let stored = &state.stored_episodes[key];
+        let stored = state
+            .stored_episode(key)
+            .expect("the plan only points collisions at stored episodes");
         let Some(recorded_hash) = &stored.content_hash else {
             continue;
         };
 
-        let audio_path = state.output_dir.join(&stored.audio_filename);
+        let audio_path = state.output_dir().join(&stored.audio_filename);
         let actual_hash = tokio::task::spawn_blocking(move || hash_file(&audio_path))
             .await
             .expect("hashing a file does not panic");

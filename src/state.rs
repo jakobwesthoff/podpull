@@ -13,27 +13,86 @@ use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 
-/// State of the output directory, tracking already-downloaded episodes
+/// State of the output directory, as found by [`scan_output_dir`]
+///
+/// The fields are views of one directory listing and are kept consistent by
+/// construction, so they are only readable from outside.
 #[derive(Debug, Clone)]
 pub struct OutputState {
-    /// GUIDs of episodes that have been downloaded
-    pub downloaded_guids: HashSet<String>,
-    /// Filenames (without path) of existing files
-    pub existing_files: HashSet<String>,
-    /// The output directory path
-    pub output_dir: PathBuf,
+    output_dir: PathBuf,
+    partial_files_cleaned: usize,
+    stuck_partial_files: Vec<PathBuf>,
+    unreadable_metadata: Vec<UnreadableMetadata>,
+    claimed_stems: HashSet<String>,
+    stored_episodes: HashMap<String, StoredEpisode>,
+    /// GUIDs recorded by `stored_episodes`, for fast lookup
+    downloaded_guids: HashSet<String>,
+}
+
+impl OutputState {
+    fn new(
+        output_dir: &Path,
+        partial_files_cleaned: usize,
+        stuck_partial_files: Vec<PathBuf>,
+        unreadable_metadata: Vec<UnreadableMetadata>,
+        claimed_stems: HashSet<String>,
+        stored_episodes: HashMap<String, StoredEpisode>,
+    ) -> Self {
+        let downloaded_guids = stored_episodes
+            .values()
+            .filter_map(|stored| stored.guid.clone())
+            .collect();
+        Self {
+            output_dir: output_dir.to_path_buf(),
+            partial_files_cleaned,
+            stuck_partial_files,
+            unreadable_metadata,
+            claimed_stems,
+            stored_episodes,
+            downloaded_guids,
+        }
+    }
+
+    pub fn output_dir(&self) -> &Path {
+        &self.output_dir
+    }
+
     /// Number of partial files that were cleaned up during scan
-    pub partial_files_cleaned: usize,
-    /// Partial files the scan could not remove; a download into such a
-    /// path fails until the file is gone
-    pub stuck_partial_files: Vec<PathBuf>,
+    pub fn partial_files_cleaned(&self) -> usize {
+        self.partial_files_cleaned
+    }
+
+    /// Partial files the scan could not remove; a download into such a path
+    /// fails until the file is gone
+    pub fn stuck_partial_files(&self) -> &[PathBuf] {
+        &self.stuck_partial_files
+    }
+
     /// Episode metadata files whose content is not valid metadata
-    pub unreadable_metadata: Vec<UnreadableMetadata>,
+    pub fn unreadable_metadata(&self) -> &[UnreadableMetadata] {
+        &self.unreadable_metadata
+    }
+
+    /// Whether readable metadata in the directory records this GUID
+    pub fn is_downloaded(&self, guid: &str) -> bool {
+        self.downloaded_guids.contains(guid)
+    }
+
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
     /// the output directory, which new downloads must not reuse
-    pub claimed_stems: HashSet<String>,
-    /// Episodes with readable metadata, keyed by the claim key of their stem
-    pub stored_episodes: HashMap<String, StoredEpisode>,
+    pub fn claimed_stems(&self) -> &HashSet<String> {
+        &self.claimed_stems
+    }
+
+    /// The episode with readable metadata whose stem has this claim key
+    pub fn stored_episode(&self, claim_key: &str) -> Option<&StoredEpisode> {
+        self.stored_episodes.get(claim_key)
+    }
+
+    /// All episodes with readable metadata
+    pub fn stored_episodes(&self) -> impl Iterator<Item = &StoredEpisode> {
+        self.stored_episodes.values()
+    }
 }
 
 /// An episode metadata file whose content could not be parsed
@@ -92,7 +151,6 @@ pub fn scan_output_dir(
     output_dir: &Path,
     reporter: &SharedProgressReporter,
 ) -> Result<OutputState, StateError> {
-    let mut downloaded_guids = HashSet::new();
     let mut existing_files = HashSet::new();
     let mut partial_files_cleaned = 0;
 
@@ -108,16 +166,14 @@ pub fn scan_output_dir(
             total_files: 0,
         });
 
-        return Ok(OutputState {
-            downloaded_guids,
-            existing_files,
-            output_dir: output_dir.to_path_buf(),
-            partial_files_cleaned,
-            stuck_partial_files: Vec::new(),
-            unreadable_metadata: Vec::new(),
-            claimed_stems: HashSet::new(),
-            stored_episodes: HashMap::new(),
-        });
+        return Ok(OutputState::new(
+            output_dir,
+            0,
+            Vec::new(),
+            Vec::new(),
+            HashSet::new(),
+            HashMap::new(),
+        ));
     }
 
     // Collect entries first (single network traversal)
@@ -212,16 +268,12 @@ pub fn scan_output_dir(
                     filename_claim_key(&stem),
                     StoredEpisode {
                         title: metadata.title,
-                        guid: metadata.guid.clone(),
+                        guid: metadata.guid,
                         audio_filename,
                         metadata_filename: format!("{}.json", stem),
                         content_hash: metadata.content_hash,
                     },
                 );
-
-                if let Some(guid) = metadata.guid {
-                    downloaded_guids.insert(guid);
-                }
             }
             // Content that is not valid metadata stays broken on every run,
             // so it is reported and its episode downloaded again. An I/O
@@ -248,16 +300,14 @@ pub fn scan_output_dir(
         });
     }
 
-    Ok(OutputState {
-        downloaded_guids,
-        existing_files,
-        output_dir: output_dir.to_path_buf(),
+    Ok(OutputState::new(
+        output_dir,
         partial_files_cleaned,
         stuck_partial_files,
         unreadable_metadata,
         claimed_stems,
         stored_episodes,
-    })
+    ))
 }
 
 /// Create a sync plan by comparing episodes against the output state
@@ -277,7 +327,7 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
         let is_downloaded = episode
             .guid
             .as_ref()
-            .is_some_and(|guid| state.downloaded_guids.contains(guid));
+            .is_some_and(|guid| state.is_downloaded(guid));
 
         if is_downloaded {
             already_present.push(episode);
@@ -299,7 +349,7 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
     // downloads are known before any of them starts. Names are handed out in
     // download order and each one is claimed right away, so episodes that
     // share title and day within this run get distinct names as well.
-    let mut claimed_stems = state.claimed_stems.clone();
+    let mut claimed_stems = state.claimed_stems().clone();
     let to_download = to_download
         .into_iter()
         .map(|episode| {
@@ -307,8 +357,8 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
             // points at; it gets checked for damage before the sync starts.
             let base_key = filename_claim_key(&generate_filename_stem(&episode));
             let collides_with = state
-                .stored_episodes
-                .contains_key(&base_key)
+                .stored_episode(&base_key)
+                .is_some()
                 .then_some(base_key);
 
             let stem = generate_unique_filename_stem(&episode, &claimed_stems);
@@ -378,18 +428,45 @@ mod tests {
         }
     }
 
+    fn stored(stem: &str, title: &str, guid: &str) -> StoredEpisode {
+        StoredEpisode {
+            title: title.to_string(),
+            guid: Some(guid.to_string()),
+            audio_filename: format!("{}.mp3", stem),
+            metadata_filename: format!("{}.json", stem),
+            content_hash: None,
+        }
+    }
+
+    /// State of an output directory holding exactly these stored episodes,
+    /// each claiming the stem of its metadata file
+    fn state_with_stored(stored: Vec<StoredEpisode>) -> OutputState {
+        let stored: HashMap<_, _> = stored
+            .into_iter()
+            .map(|episode| {
+                let stem = episode.metadata_filename.trim_end_matches(".json");
+                (filename_claim_key(stem), episode)
+            })
+            .collect();
+        let claimed = stored.keys().cloned().collect();
+        OutputState::new(
+            Path::new("/tmp"),
+            0,
+            Vec::new(),
+            Vec::new(),
+            claimed,
+            stored,
+        )
+    }
+
     /// State of an output directory in which exactly `guids` were downloaded
     fn state_with_guids(guids: &[&str]) -> OutputState {
-        OutputState {
-            downloaded_guids: guids.iter().map(|guid| guid.to_string()).collect(),
-            existing_files: HashSet::new(),
-            output_dir: PathBuf::from("/tmp"),
-            partial_files_cleaned: 0,
-            stuck_partial_files: Vec::new(),
-            unreadable_metadata: Vec::new(),
-            claimed_stems: HashSet::new(),
-            stored_episodes: HashMap::new(),
-        }
+        state_with_stored(
+            guids
+                .iter()
+                .map(|guid| stored(&format!("stored-{}", guid), "Stored", guid))
+                .collect(),
+        )
     }
 
     fn make_time(rfc2822: &str) -> Option<DateTime<FixedOffset>> {
@@ -408,9 +485,9 @@ mod tests {
         let reporter = NoopReporter::shared();
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
-        assert!(state.downloaded_guids.is_empty());
-        assert!(state.existing_files.is_empty());
-        assert_eq!(state.partial_files_cleaned, 0);
+        assert!(state.stored_episodes().next().is_none());
+        assert!(state.claimed_stems().is_empty());
+        assert_eq!(state.partial_files_cleaned(), 0);
     }
 
     #[test]
@@ -422,7 +499,7 @@ mod tests {
         assert!(!output_dir.exists());
         let state = scan_output_dir(&output_dir, &reporter).unwrap();
         assert!(output_dir.exists());
-        assert!(state.downloaded_guids.is_empty());
+        assert!(state.stored_episodes().next().is_none());
     }
 
     #[test]
@@ -437,11 +514,11 @@ mod tests {
         let reporter = NoopReporter::shared();
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
-        assert!(state.downloaded_guids.contains("test-guid-123"));
+        assert!(state.is_downloaded("test-guid-123"));
         assert!(
             state
-                .existing_files
-                .contains("2024-01-15-test-episode.json")
+                .claimed_stems()
+                .contains(&filename_claim_key("2024-01-15-test-episode"))
         );
     }
 
@@ -466,8 +543,8 @@ mod tests {
             .map(|unreadable| &unreadable.path)
             .collect();
         assert_eq!(unreadable, vec![&dir.path().join("truncated.json")]);
-        assert!(state.unreadable_metadata[0].error.contains("EOF"));
-        assert!(state.downloaded_guids.contains("readable-guid"));
+        assert!(state.unreadable_metadata()[0].error.contains("EOF"));
+        assert!(state.is_downloaded("readable-guid"));
     }
 
     #[test]
@@ -478,7 +555,7 @@ mod tests {
         let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
 
         assert_eq!(
-            state.unreadable_metadata[0].path,
+            state.unreadable_metadata()[0].path,
             dir.path().join("binary.json")
         );
     }
@@ -526,7 +603,7 @@ mod tests {
         .iter()
         .map(|stem| filename_claim_key(stem))
         .collect();
-        assert_eq!(state.claimed_stems, expected);
+        assert_eq!(state.claimed_stems(), &expected);
     }
 
     #[test]
@@ -545,7 +622,9 @@ mod tests {
 
         let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
 
-        let stored = &state.stored_episodes[&filename_claim_key("2019-12-27-Neuzug\u{00e4}nge #4")];
+        let stored = state
+            .stored_episode(&filename_claim_key("2019-12-27-Neuzug\u{00e4}nge #4"))
+            .unwrap();
         assert_eq!(stored.title, "Neuzug\u{00e4}nge #4");
         assert_eq!(stored.audio_filename, format!("{}.mp3", listed_stem));
         assert_eq!(stored.metadata_filename, format!("{}.json", listed_stem));
@@ -567,7 +646,10 @@ mod tests {
         let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
 
         assert_eq!(
-            state.stored_episodes[&filename_claim_key("2024-01-15-Bare")].audio_filename,
+            state
+                .stored_episode(&filename_claim_key("2024-01-15-Bare"))
+                .unwrap()
+                .audio_filename,
             "2024-01-15-Bare"
         );
     }
@@ -582,7 +664,7 @@ mod tests {
 
         let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
 
-        assert_eq!(state.partial_files_cleaned, 1);
+        assert_eq!(state.partial_files_cleaned(), 1);
         assert_eq!(state.stuck_partial_files, vec![stuck]);
     }
 
@@ -598,9 +680,10 @@ mod tests {
         let reporter = NoopReporter::shared();
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
-        // podcast.json should be in existing_files but not affect downloaded_guids
-        assert!(state.existing_files.contains("podcast.json"));
-        assert!(state.downloaded_guids.is_empty());
+        // podcast.json claims its stem but is no episode
+        assert!(state.claimed_stems().contains("podcast"));
+        assert!(state.stored_episodes().next().is_none());
+        assert_eq!(state.stored_episodes().count(), 0);
     }
 
     #[test]
@@ -733,19 +816,12 @@ mod tests {
 
     #[test]
     fn sync_plan_points_disk_collisions_at_the_stored_episode() {
-        let mut state = state_with_guids(&["guid-stored"]);
+        let state = state_with_stored(vec![stored(
+            "2024-12-19-Sega Nomad",
+            "Sega Nomad",
+            "guid-stored",
+        )]);
         let key = filename_claim_key("2024-12-19-Sega Nomad");
-        state.claimed_stems.insert(key.clone());
-        state.stored_episodes.insert(
-            key.clone(),
-            StoredEpisode {
-                title: "Sega Nomad".to_string(),
-                guid: Some("guid-stored".to_string()),
-                audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
-                metadata_filename: "2024-12-19-Sega Nomad.json".to_string(),
-                content_hash: None,
-            },
-        );
         let newer = make_episode_with_date(
             "Sega Nomad",
             Some("guid-newer"),
@@ -811,15 +887,15 @@ mod tests {
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         // Partial files should have been cleaned up
-        assert_eq!(state.partial_files_cleaned, 2);
+        assert_eq!(state.partial_files_cleaned(), 2);
         assert!(!dir.path().join("episode1.mp3.partial").exists());
         assert!(!dir.path().join("episode2.mp3.partial").exists());
         // Normal file should still exist
         assert!(dir.path().join("episode3.mp3").exists());
-        assert!(state.existing_files.contains("episode3.mp3"));
-        // Partial files should not be in existing_files
-        assert!(!state.existing_files.contains("episode1.mp3.partial"));
-        assert!(!state.existing_files.contains("episode2.mp3.partial"));
+        assert!(state.claimed_stems().contains("episode3"));
+        // Partial files claim no name
+        assert!(!state.claimed_stems().contains("episode1.mp3"));
+        assert!(!state.claimed_stems().contains("episode2.mp3"));
     }
 
     #[test]
