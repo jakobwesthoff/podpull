@@ -100,6 +100,7 @@ impl OutputState {
 
 /// An episode metadata file whose content could not be parsed
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UnreadableMetadata {
     pub path: PathBuf,
     /// Why the content could not be used
@@ -108,6 +109,7 @@ pub struct UnreadableMetadata {
 
 /// An episode downloaded by an earlier run, as its metadata records it
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct StoredEpisode {
     pub title: String,
     pub guid: Option<String>,
@@ -127,6 +129,7 @@ pub struct StoredEpisode {
 /// Audio and metadata share one stem, so a plan cannot pair the audio of
 /// one name with the metadata of another.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PlannedDownload {
     pub episode: Episode,
     /// Name of both files inside the output directory, without extension
@@ -138,6 +141,20 @@ pub struct PlannedDownload {
 }
 
 impl PlannedDownload {
+    /// Plan a fresh download of `episode` under `stem`
+    pub fn new(
+        episode: Episode,
+        stem: impl Into<String>,
+        audio_extension: impl Into<String>,
+    ) -> Self {
+        Self {
+            episode,
+            stem: stem.into(),
+            audio_extension: audio_extension.into(),
+            replaces_existing: false,
+        }
+    }
+
     /// Name of the audio file inside the output directory
     pub fn audio_filename(&self) -> String {
         format!("{}.{}", self.stem, self.audio_extension)
@@ -151,6 +168,7 @@ impl PlannedDownload {
 
 /// Plan for synchronization, indicating what needs to be downloaded
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SyncPlan {
     /// Episodes to download in this run, newest first, within the limit
     pub to_download: Vec<PlannedDownload>,
@@ -173,6 +191,7 @@ pub struct SyncPlan {
 /// A stored episode whose audio is checked against its recorded hash,
 /// with the feed episode it belongs to
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CheckTarget {
     pub stored: StoredEpisode,
     /// The feed's episode with the stored episode's GUID, if still listed

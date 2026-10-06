@@ -25,7 +25,27 @@ use crate::state::{
 };
 
 /// Options for podcast synchronization
+///
+/// New options can be added without breaking callers, so outside this crate
+/// options start from [`Default`] and set the fields they need:
+///
+/// ```
+/// let mut options = podpull::SyncOptions::default();
+/// options.limit = Some(10);
+/// ```
+///
+/// A struct literal is rejected, as it would break with every new field:
+///
+/// ```compile_fail,E0639
+/// let options = podpull::SyncOptions {
+///     limit: None,
+///     max_concurrent: 3,
+///     continue_on_error: true,
+///     audio_check: podpull::AudioCheck::Collisions,
+/// };
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SyncOptions {
     /// Maximum number of episodes to download (None = all)
     pub limit: Option<usize>,
@@ -41,6 +61,7 @@ pub struct SyncOptions {
 /// Which stored audio a sync checks against the hash recorded when it was
 /// downloaded
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum AudioCheck {
     /// Only audio a new episode's base filename collides with, which is
     /// where podpull 1.1.2 and earlier could leave damage; mismatches are
@@ -66,7 +87,8 @@ impl Default for SyncOptions {
 }
 
 /// Result of a sync operation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct SyncResult {
     /// Number of episodes successfully downloaded
     pub downloaded: usize,
@@ -85,6 +107,7 @@ pub struct SyncResult {
 
 /// What happens with stored audio that no longer matches its recorded hash
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DamageRemedy {
     /// The episode is downloaded again under its existing names
     Repairing,
@@ -102,11 +125,26 @@ pub enum DamageRemedy {
 /// Stored audio that no longer matches its recorded hash and was left as
 /// it is
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DamagedAudio {
     pub episode_title: String,
     pub audio_filename: String,
     /// Never [`DamageRemedy::Repairing`]: repaired audio is not damaged
     pub remedy: DamageRemedy,
+}
+
+impl DamagedAudio {
+    pub fn new(
+        episode_title: impl Into<String>,
+        audio_filename: impl Into<String>,
+        remedy: DamageRemedy,
+    ) -> Self {
+        Self {
+            episode_title: episode_title.into(),
+            audio_filename: audio_filename.into(),
+            remedy,
+        }
+    }
 }
 
 /// Synchronize a podcast feed to a local directory
@@ -1654,11 +1692,10 @@ mod tests {
             url::Url::parse("https://example.com/feed.xml").unwrap(),
         )
         .unwrap();
+        let planned = PlannedDownload::new(feed.episodes[0].clone(), NOMAD_STEM, "mp3");
         PlannedDownload {
-            episode: feed.episodes[0].clone(),
-            stem: NOMAD_STEM.to_string(),
-            audio_extension: "mp3".to_string(),
             replaces_existing,
+            ..planned
         }
     }
 

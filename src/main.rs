@@ -354,6 +354,9 @@ impl ProgressReporter for IndicatifReporter {
                     parts.join(", ")
                 );
             }
+
+            // Events added to the library after this reporter are not shown.
+            _ => {}
         }
     }
 }
@@ -420,6 +423,9 @@ fn damage_message(episode_title: &str, audio_filename: &str, remedy: DamageRemed
             "the feed now offers another audio format, so delete it and its .json file \
              to download it again"
         }
+        // A remedy added to the library after this message only lacks its
+        // explanation.
+        _ => "see the podpull documentation",
     };
     format!(
         "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded; {}",
@@ -455,19 +461,19 @@ fn available_title_width(index_width: usize) -> usize {
 }
 
 fn sync_options(args: &Args) -> SyncOptions {
-    SyncOptions {
-        limit: args.limit,
-        max_concurrent: args.concurrent,
-        continue_on_error: true,
-        // --repair includes everything --verify does.
-        audio_check: if args.repair {
-            AudioCheck::Repair
-        } else if args.verify {
-            AudioCheck::Verify
-        } else {
-            AudioCheck::Collisions
-        },
-    }
+    let mut options = SyncOptions::default();
+    options.limit = args.limit;
+    options.max_concurrent = args.concurrent;
+    options.continue_on_error = true;
+    // --repair includes everything --verify does.
+    options.audio_check = if args.repair {
+        AudioCheck::Repair
+    } else if args.verify {
+        AudioCheck::Verify
+    } else {
+        AudioCheck::Collisions
+    };
+    options
 }
 
 #[tokio::main]
@@ -688,22 +694,22 @@ mod tests {
     }
 
     fn result(downloaded: usize, failed: usize, damaged: usize) -> SyncResult {
-        SyncResult {
-            downloaded,
-            skipped: 0,
-            failed,
-            failed_episodes: (0..failed)
-                .map(|n| (format!("Episode {}", n), "HTTP error 404".to_string()))
-                .collect(),
-            not_started: 0,
-            damaged: (0..damaged)
-                .map(|n| DamagedAudio {
-                    episode_title: format!("Damaged {}", n),
-                    audio_filename: format!("2024-01-0{}-Damaged.mp3", n + 1),
-                    remedy: DamageRemedy::RepairAvailable,
-                })
-                .collect(),
-        }
+        let mut result = SyncResult::default();
+        result.downloaded = downloaded;
+        result.failed = failed;
+        result.failed_episodes = (0..failed)
+            .map(|n| (format!("Episode {}", n), "HTTP error 404".to_string()))
+            .collect();
+        result.damaged = (0..damaged)
+            .map(|n| {
+                DamagedAudio::new(
+                    format!("Damaged {}", n),
+                    format!("2024-01-0{}-Damaged.mp3", n + 1),
+                    DamageRemedy::RepairAvailable,
+                )
+            })
+            .collect();
+        result
     }
 
     #[test]

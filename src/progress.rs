@@ -8,7 +8,11 @@ use std::sync::Arc;
 use crate::sync::DamageRemedy;
 
 /// Events emitted during podcast synchronization for progress reporting
+///
+/// New events can be added without breaking reporters, so a reporter
+/// outside this crate needs a catch-all arm.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ProgressEvent {
     /// Feed is being fetched from URL (network request)
     FetchingFeed { url: String },
