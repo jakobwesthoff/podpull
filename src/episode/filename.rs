@@ -21,9 +21,12 @@ const DATE_FORMAT: &str = "%Y-%m-%d";
 /// Date format of the prefix that tells apart episodes sharing a day
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d-%H%M%S";
 
-/// Generate a filename stem (without extension) for an episode
+/// Generate the base filename stem (without extension) for an episode
 ///
 /// Format: "YYYY-MM-DD-sanitized-title" or "undated-sanitized-title"
+///
+/// Episodes sharing title and publication day share this stem.
+/// [`generate_unique_filename_stem`] gives each of them a name of its own.
 pub fn generate_filename_stem(episode: &Episode) -> String {
     dated_stem(episode, DATE_FORMAT, &sanitize_title(&episode.title))
 }
@@ -71,7 +74,7 @@ pub fn get_audio_extension(episode: &Episode) -> String {
 /// get the same base name; [`generate_unique_filename_stem`] resolves that.
 #[deprecated(
     since = "1.2.0",
-    note = "episodes sharing title and date collide; use the names in `SyncPlan::to_download`"
+    note = "episodes sharing title and date collide; use `generate_unique_filename_stem` or the names in `SyncPlan::to_download`"
 )]
 pub fn generate_filename(episode: &Episode) -> String {
     let stem = generate_filename_stem(episode);

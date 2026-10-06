@@ -26,7 +26,7 @@ pub struct OutputState {
     partial_files_cleaned: usize,
     stuck_partial_files: Vec<PathBuf>,
     unreadable_metadata: Vec<UnreadableMetadata>,
-    claimed_stems: HashSet<String>,
+    claimed_keys: HashSet<String>,
     stored_episodes: HashMap<String, StoredEpisode>,
     /// GUIDs recorded by `stored_episodes`, for fast lookup
     downloaded_guids: HashSet<String>,
@@ -40,7 +40,7 @@ impl OutputState {
         partial_files_cleaned: usize,
         stuck_partial_files: Vec<PathBuf>,
         unreadable_metadata: Vec<UnreadableMetadata>,
-        claimed_stems: HashSet<String>,
+        claimed_keys: HashSet<String>,
         stored_episodes: HashMap<String, StoredEpisode>,
     ) -> Self {
         let downloaded_guids = stored_episodes
@@ -67,7 +67,7 @@ impl OutputState {
             partial_files_cleaned,
             stuck_partial_files,
             unreadable_metadata,
-            claimed_stems,
+            claimed_keys,
             stored_episodes,
             downloaded_guids,
             claim_keys_by_content_hash,
@@ -114,8 +114,8 @@ impl OutputState {
 
     /// Claim keys (see [`filename_claim_key`]) of the stems of all files in
     /// the output directory, which new downloads must not reuse
-    pub fn claimed_stems(&self) -> &HashSet<String> {
-        &self.claimed_stems
+    pub fn claimed_keys(&self) -> &HashSet<String> {
+        &self.claimed_keys
     }
 
     /// The episode with readable metadata whose stem has this claim key
@@ -351,7 +351,7 @@ pub fn scan_output_dir(
     // copy of an episode that has since left the feed, so a new download
     // must not take its name. The cost is a second copy when that audio
     // turns out to be a leftover of the very episode being downloaded.
-    let claimed_stems = existing_files
+    let claimed_keys = existing_files
         .iter()
         .filter_map(|name| Path::new(name).file_stem())
         .map(|stem| filename_claim_key(&stem.to_string_lossy()))
@@ -435,7 +435,7 @@ pub fn scan_output_dir(
         partial_files_cleaned,
         stuck_partial_files,
         unreadable_metadata,
-        claimed_stems,
+        claimed_keys,
         stored_episodes,
     ))
 }
@@ -509,12 +509,12 @@ pub fn create_sync_plan(
     // downloads are known before any of them starts. Names are handed out in
     // download order and each one is claimed right away, so episodes that
     // share title and day within this run get distinct names as well.
-    let mut claimed_stems = state.claimed_stems().clone();
+    let mut claimed_keys = state.claimed_keys().clone();
     let to_download = to_download
         .into_iter()
         .map(|episode| {
-            let stem = generate_unique_filename_stem(&episode, &claimed_stems);
-            claimed_stems.insert(filename_claim_key(&stem));
+            let stem = generate_unique_filename_stem(&episode, &claimed_keys);
+            claimed_keys.insert(filename_claim_key(&stem));
             PlannedDownload {
                 replaces_existing: false,
                 audio_extension: get_audio_extension(&episode),
@@ -755,7 +755,7 @@ mod tests {
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         assert!(state.stored_episodes().next().is_none());
-        assert!(state.claimed_stems().is_empty());
+        assert!(state.claimed_keys().is_empty());
         assert_eq!(state.partial_files_cleaned(), 0);
     }
 
@@ -786,7 +786,7 @@ mod tests {
         assert!(state.is_downloaded("test-guid-123"));
         assert!(
             state
-                .claimed_stems()
+                .claimed_keys()
                 .contains(&filename_claim_key("2024-01-15-test-episode"))
         );
     }
@@ -872,7 +872,7 @@ mod tests {
         .iter()
         .map(|stem| filename_claim_key(stem))
         .collect();
-        assert_eq!(state.claimed_stems(), &expected);
+        assert_eq!(state.claimed_keys(), &expected);
     }
 
     #[test]
@@ -996,7 +996,7 @@ mod tests {
         let state = scan_output_dir(dir.path(), &reporter).unwrap();
 
         // podcast.json claims its stem but is no episode
-        assert!(state.claimed_stems().contains("podcast"));
+        assert!(state.claimed_keys().contains("podcast"));
         assert!(state.stored_episodes().next().is_none());
         assert_eq!(state.stored_episodes().count(), 0);
     }
@@ -1114,7 +1114,7 @@ mod tests {
     fn sync_plan_avoids_stems_claimed_on_disk() {
         let mut state = state_with_guids(&[]);
         state
-            .claimed_stems
+            .claimed_keys
             .insert(filename_claim_key("2024-12-19-Sega Nomad"));
         let episode = make_episode_with_date(
             "Sega Nomad",
@@ -1470,10 +1470,10 @@ mod tests {
         assert!(!dir.path().join("episode2.mp3.partial").exists());
         // Normal file should still exist
         assert!(dir.path().join("episode3.mp3").exists());
-        assert!(state.claimed_stems().contains("episode3"));
+        assert!(state.claimed_keys().contains("episode3"));
         // Partial files claim no name
-        assert!(!state.claimed_stems().contains("episode1.mp3"));
-        assert!(!state.claimed_stems().contains("episode2.mp3"));
+        assert!(!state.claimed_keys().contains("episode1.mp3"));
+        assert!(!state.claimed_keys().contains("episode2.mp3"));
     }
 
     #[test]
