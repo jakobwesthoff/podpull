@@ -319,63 +319,49 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            event @ ProgressEvent::SyncCompleted { .. } => {
+            ProgressEvent::SyncCompleted => {
                 self.main_bar.finish_and_clear();
-                println!(
-                    "\n{PARTY}{} {}",
-                    "Sync complete:".bold().green(),
-                    completion_summary(&event)
-                );
             }
         }
     }
 }
 
 /// The counts of a finished sync, for its closing line
-fn completion_summary(event: &ProgressEvent) -> String {
-    let ProgressEvent::SyncCompleted {
-        downloaded_count,
-        existing_count,
-        repaired_count,
-        adopted_count,
-        limited_count,
-        failed_count,
-        damaged_count,
-    } = *event
-    else {
-        return String::new();
-    };
-
+fn completion_summary(result: &SyncResult) -> String {
     let mut parts = vec![
-        format!("{} downloaded", downloaded_count.to_string().green().bold()),
-        format!("{} existing", existing_count.to_string().yellow()),
+        format!(
+            "{} downloaded",
+            result.downloaded.to_string().green().bold()
+        ),
+        format!("{} existing", result.existing.to_string().yellow()),
     ];
 
-    if repaired_count > 0 {
-        parts.push(format!("{} repaired", repaired_count.to_string().green()));
+    if result.repaired > 0 {
+        parts.push(format!("{} repaired", result.repaired.to_string().green()));
     }
 
-    if adopted_count > 0 {
+    if result.adopted > 0 {
         parts.push(format!(
             "{} already stored",
-            adopted_count.to_string().yellow()
+            result.adopted.to_string().yellow()
         ));
     }
 
-    if limited_count > 0 {
-        parts.push(format!("{} limited", limited_count.to_string().cyan()));
+    if result.limited > 0 {
+        parts.push(format!("{} limited", result.limited.to_string().cyan()));
     }
 
-    parts.push(if failed_count > 0 {
-        format!("{} failed", failed_count.to_string().red().bold())
+    let failed = result.failed_episodes.len();
+    parts.push(if failed > 0 {
+        format!("{} failed", failed.to_string().red().bold())
     } else {
-        format!("{} failed", failed_count.to_string().green())
+        format!("{} failed", failed.to_string().green())
     });
 
-    if damaged_count > 0 {
+    if !result.damaged.is_empty() {
         parts.push(format!(
             "{} damaged",
-            damaged_count.to_string().red().bold()
+            result.damaged.len().to_string().red().bold()
         ));
     }
 
@@ -546,6 +532,11 @@ async fn main() -> Result<()> {
         write_problem_lists(&result, &mut std::io::stderr())
             .context("write the problem lists to stderr")?;
     } else {
+        println!(
+            "\n{PARTY}{} {}",
+            "Sync complete:".bold().green(),
+            completion_summary(&result)
+        );
         write_problem_lists(&result, &mut std::io::stdout())
             .context("write the problem lists to stdout")?;
         println!(
@@ -858,22 +849,21 @@ mod tests {
     }
 
     #[test]
-    fn completion_summary_lists_repairs_and_recorded_guids() {
+    fn completion_summary_lists_repairs_recorded_guids_and_the_limit() {
         colored::control::set_override(false);
 
-        let summary = completion_summary(&ProgressEvent::SyncCompleted {
-            downloaded_count: 4,
-            existing_count: 5,
-            repaired_count: 2,
-            adopted_count: 1,
-            limited_count: 0,
-            failed_count: 0,
-            damaged_count: 0,
+        let summary = completion_summary(&SyncResult {
+            downloaded: 4,
+            existing: 5,
+            repaired: 2,
+            adopted: 1,
+            limited: 3,
+            ..Default::default()
         });
 
         assert_eq!(
             summary,
-            "4 downloaded, 5 existing, 2 repaired, 1 already stored, 0 failed"
+            "4 downloaded, 5 existing, 2 repaired, 1 already stored, 3 limited, 0 failed"
         );
     }
 

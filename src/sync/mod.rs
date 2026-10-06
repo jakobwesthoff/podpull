@@ -66,8 +66,10 @@ pub struct SyncResult {
     pub downloaded: usize,
     /// Number of episodes whose damaged audio was downloaded again
     pub repaired: usize,
-    /// Number of episodes skipped (already present)
-    pub skipped: usize,
+    /// Number of episodes already present in the output directory
+    pub existing: usize,
+    /// Number of new episodes the limit held back
+    pub limited: usize,
     /// Episodes whose download failed
     pub failed_episodes: Vec<FailedEpisode>,
     /// Stored audio found damaged or missing and left as it is
@@ -191,20 +193,13 @@ pub async fn sync_podcast<C: HttpClient>(
     let downloaded = totals.downloaded;
     let failed_episodes = totals.failed_episodes;
 
-    reporter.report(ProgressEvent::SyncCompleted {
-        downloaded_count: downloaded,
-        existing_count: existing,
-        repaired_count: totals.repaired,
-        limited_count: limited,
-        failed_count: failed_episodes.len(),
-        damaged_count: verification.damaged.len(),
-        adopted_count: totals.adopted,
-    });
+    reporter.report(ProgressEvent::SyncCompleted);
 
     Ok(SyncResult {
         downloaded,
         repaired: totals.repaired,
-        skipped: existing,
+        existing,
+        limited,
         failed_episodes,
         damaged: verification.damaged,
         adopted: totals.adopted,
@@ -348,7 +343,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.downloaded, 2);
-        assert_eq!(result.skipped, 0);
+        assert_eq!(result.existing, 0);
         assert_eq!(result.failed_episodes.len(), 0);
 
         // Check files exist
@@ -380,6 +375,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.downloaded, 1);
+        assert_eq!(result.limited, 1);
     }
 
     #[tokio::test]
@@ -414,7 +410,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.downloaded, 0);
-        assert_eq!(result.skipped, 2);
+        assert_eq!(result.existing, 2);
     }
 
     #[tokio::test]
@@ -629,7 +625,7 @@ mod tests {
         let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
 
         assert_eq!(result.downloaded, 0);
-        assert_eq!(result.skipped, 2);
+        assert_eq!(result.existing, 2);
     }
 
     #[tokio::test]
@@ -647,7 +643,7 @@ mod tests {
         let result = sync_with(dir.path(), &client, &SyncOptions::default()).await;
 
         assert_eq!(result.downloaded, 1);
-        assert_eq!(result.skipped, 1);
+        assert_eq!(result.existing, 1);
         let recorded = recorded_episodes(dir.path());
         assert_eq!(
             recorded["nomad-reupload"],
@@ -888,7 +884,7 @@ mod tests {
 
         assert_eq!(result.downloaded, 1);
         assert_eq!(result.failed_episodes.len(), 0);
-        assert_eq!(result.skipped, 0);
+        assert_eq!(result.existing, 0);
         assert_eq!(result.damaged, vec![damage(DamageRemedy::RepairAvailable)]);
         assert_eq!(
             mismatch_events(&events),
@@ -1139,17 +1135,14 @@ mod tests {
 
         assert_eq!(result.downloaded, 1);
         assert_eq!(result.repaired, 1);
-        assert_eq!(result.skipped, 0);
+        assert_eq!(result.existing, 0);
         assert_eq!(result.failed_episodes.len(), 0);
         assert!(result.damaged.is_empty());
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ProgressEvent::SyncCompleted {
-                downloaded_count: 1,
-                repaired_count: 1,
-                ..
-            }
-        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ProgressEvent::SyncCompleted))
+        );
         assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
         let metadata = crate::metadata::read_episode_metadata(
             &dir.path().join(format!("{}.json", NOMAD_STEM)),
@@ -1289,7 +1282,7 @@ mod tests {
 
         assert_eq!(result.downloaded, 2);
         assert_eq!(result.repaired, 2);
-        assert_eq!(result.skipped, 0);
+        assert_eq!(result.existing, 0);
         assert!(result.damaged.is_empty());
     }
 
@@ -1590,7 +1583,7 @@ mod tests {
         let result = sync_feed(feed("token-b")).await;
 
         assert_eq!(result.downloaded, 0);
-        assert_eq!(result.skipped, 1);
+        assert_eq!(result.existing, 1);
         let audio_files = std::fs::read_dir(dir.path())
             .unwrap()
             .filter(|entry| {
@@ -1715,7 +1708,7 @@ mod tests {
 
         assert_eq!(result.downloaded, 0);
         assert_eq!(result.adopted, 0);
-        assert_eq!(result.skipped, 1);
+        assert_eq!(result.existing, 1);
     }
 
     #[tokio::test]
@@ -1732,7 +1725,7 @@ mod tests {
         assert_eq!(first.adopted, 0);
         assert_eq!(audio_files(dir.path()).len(), 2);
         assert_eq!(second.downloaded, 0);
-        assert_eq!(second.skipped, 2);
+        assert_eq!(second.existing, 2);
     }
 
     #[tokio::test]

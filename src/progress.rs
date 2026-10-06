@@ -115,22 +115,8 @@ pub enum ProgressEvent {
         remedy: DamageRemedy,
     },
 
-    /// Sync operation completed
-    SyncCompleted {
-        /// New episodes downloaded
-        downloaded_count: usize,
-        /// Episodes already present in output directory
-        existing_count: usize,
-        /// Episodes whose damaged audio was downloaded again
-        repaired_count: usize,
-        /// New episodes not downloaded due to --limit
-        limited_count: usize,
-        failed_count: usize,
-        /// Stored audio found damaged and left as it is
-        damaged_count: usize,
-        /// New episodes found already stored, whose GUID was recorded
-        adopted_count: usize,
-    },
+    /// Sync operation completed; its counts are in the `SyncResult`
+    SyncCompleted,
 }
 
 /// Trait for reporting progress events during synchronization.
@@ -245,15 +231,7 @@ mod tests {
             error: "Permission denied".to_string(),
         });
 
-        reporter.report(ProgressEvent::SyncCompleted {
-            downloaded_count: 4,
-            existing_count: 5,
-            limited_count: 2,
-            failed_count: 1,
-            damaged_count: 0,
-            adopted_count: 0,
-            repaired_count: 0,
-        });
+        reporter.report(ProgressEvent::SyncCompleted);
 
         reporter.report(ProgressEvent::EpisodeAlreadyStored {
             download_id: 0,
