@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 use url::Url;
 
-use crate::episode::{DownloadContext, download_episode, generate_filename};
+use crate::episode::{DownloadContext, download_episode};
 use crate::error::{FeedError, SyncError};
 use crate::feed::{fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file};
 use crate::http::HttpClient;
@@ -169,7 +169,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
 
     let mut handles = Vec::new();
 
-    for (episode_index, episode) in to_download.into_iter().enumerate() {
+    for (episode_index, planned) in to_download.into_iter().enumerate() {
         // Acquire a slot from the pool BEFORE spawning (blocks until one is free)
         // This ensures episodes are started in order
         let download_id = slot_rx.lock().await.recv().await.unwrap();
@@ -190,12 +190,9 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
                 total_to_download,
             };
 
-            let filename = generate_filename(&episode);
-            let audio_path = output_dir.join(&filename);
-            let metadata_path = output_dir.join(format!(
-                "{}.json",
-                audio_path.file_stem().unwrap().to_string_lossy()
-            ));
+            let episode = planned.episode;
+            let audio_path = output_dir.join(&planned.audio_filename);
+            let metadata_path = output_dir.join(&planned.metadata_filename);
 
             let result =
                 download_episode(&client, &episode, &audio_path, &context, &reporter).await;
@@ -205,7 +202,7 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
                     // Write episode metadata with content hash
                     if let Err(e) = write_episode_metadata(
                         &episode,
-                        &filename,
+                        &planned.audio_filename,
                         Some(download_result.content_hash),
                         &metadata_path,
                     ) {

@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::episode::{generate_filename_stem, get_audio_extension};
 use crate::error::StateError;
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
@@ -25,11 +26,21 @@ pub struct OutputState {
     pub unreadable_metadata: Vec<PathBuf>,
 }
 
+/// An episode scheduled for download, with the files it is written to
+#[derive(Debug, Clone)]
+pub struct PlannedDownload {
+    pub episode: Episode,
+    /// Name of the audio file inside the output directory
+    pub audio_filename: String,
+    /// Name of the episode metadata file inside the output directory
+    pub metadata_filename: String,
+}
+
 /// Plan for synchronization, indicating what needs to be downloaded
 #[derive(Debug, Clone)]
 pub struct SyncPlan {
-    /// Episodes that need to be downloaded
-    pub to_download: Vec<Episode>,
+    /// Episodes that need to be downloaded, newest first
+    pub to_download: Vec<PlannedDownload>,
     /// Episodes already present in the output directory
     pub already_present: Vec<Episode>,
     /// Total number of episodes in the feed
@@ -185,6 +196,20 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
         (None, Some(_)) => std::cmp::Ordering::Less,    // a has date, b doesn't => a comes first
         (None, None) => std::cmp::Ordering::Equal,
     });
+
+    // The plan decides where every download goes, so that the paths of all
+    // downloads are known before any of them starts.
+    let to_download = to_download
+        .into_iter()
+        .map(|episode| {
+            let stem = generate_filename_stem(&episode);
+            PlannedDownload {
+                audio_filename: format!("{}.{}", stem, get_audio_extension(&episode)),
+                metadata_filename: format!("{}.json", stem),
+                episode,
+            }
+        })
+        .collect();
 
     SyncPlan {
         to_download,
@@ -368,7 +393,7 @@ mod tests {
         let plan = create_sync_plan(episodes, &state);
 
         assert_eq!(plan.to_download.len(), 1);
-        assert_eq!(plan.to_download[0].title, "Ep 2");
+        assert_eq!(plan.to_download[0].episode.title, "Ep 2");
         assert_eq!(plan.already_present.len(), 1);
         assert_eq!(plan.already_present[0].title, "Ep 1");
     }
@@ -385,7 +410,30 @@ mod tests {
         let plan = create_sync_plan(episodes, &state);
 
         assert_eq!(plan.to_download.len(), 1);
-        assert_eq!(plan.to_download[0].title, "Ep 2");
+        assert_eq!(plan.to_download[0].episode.title, "Ep 2");
+    }
+
+    #[test]
+    fn sync_plan_assigns_audio_and_metadata_filenames() {
+        let episode = Episode {
+            enclosure: Enclosure {
+                url: Url::parse("https://example.com/book.m4a").unwrap(),
+                length: None,
+                mime_type: None,
+            },
+            ..make_episode_with_date("Audio Book", Some("guid-1"), Some(make_date(2024, 1, 16)))
+        };
+
+        let plan = create_sync_plan(vec![episode], &state_with_guids(&[]));
+
+        assert_eq!(
+            plan.to_download[0].audio_filename,
+            "2024-01-16-Audio Book.m4a"
+        );
+        assert_eq!(
+            plan.to_download[0].metadata_filename,
+            "2024-01-16-Audio Book.json"
+        );
     }
 
     #[test]
@@ -436,9 +484,9 @@ mod tests {
 
         // Should be sorted newest first
         assert_eq!(plan.to_download.len(), 3);
-        assert_eq!(plan.to_download[0].title, "Newest Episode");
-        assert_eq!(plan.to_download[1].title, "Middle Episode");
-        assert_eq!(plan.to_download[2].title, "Old Episode");
+        assert_eq!(plan.to_download[0].episode.title, "Newest Episode");
+        assert_eq!(plan.to_download[1].episode.title, "Middle Episode");
+        assert_eq!(plan.to_download[2].episode.title, "Old Episode");
     }
 
     #[test]
@@ -455,9 +503,9 @@ mod tests {
 
         // Episode with date should be first, undated ones at the end
         assert_eq!(plan.to_download.len(), 3);
-        assert_eq!(plan.to_download[0].title, "With Date");
+        assert_eq!(plan.to_download[0].episode.title, "With Date");
         // Undated episodes preserve relative order
-        assert_eq!(plan.to_download[1].title, "No Date 1");
-        assert_eq!(plan.to_download[2].title, "No Date 2");
+        assert_eq!(plan.to_download[1].episode.title, "No Date 1");
+        assert_eq!(plan.to_download[2].episode.title, "No Date 2");
     }
 }
