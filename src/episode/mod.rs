@@ -10,3 +10,9 @@ pub use download::{DownloadContext, stage_download};
 pub use filename::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };
+
+/// Lowercase hex digits of `bytes`, as stored content hashes and hashed
+/// filename suffixes spell a SHA-256 digest
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

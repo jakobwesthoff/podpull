@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
+use super::lower_hex;
 use crate::error::DownloadError;
 use crate::feed::Episode;
 use crate::fs_sync::sync_file;
@@ -32,7 +33,7 @@ const HASH_READ_SIZE: usize = 1024 * 1024;
 
 /// Format a finished hash the way episode metadata records it
 fn content_hash(hasher: Sha256) -> String {
-    format!("sha256:{:x}", hasher.finalize())
+    format!("sha256:{}", lower_hex(&hasher.finalize()))
 }
 
 /// Hash a file in the format [`StagedDownload::content_hash`] uses
@@ -401,6 +402,21 @@ mod tests {
         staged.finalize().await.unwrap();
 
         assert_eq!(hash_file(&output_path, |_, _| {}).unwrap(), recorded_hash);
+    }
+
+    #[test]
+    fn hash_file_keeps_the_format_of_recorded_hashes() {
+        // Episode metadata stores this exact spelling, so it must not
+        // change: "sha256:" and the lowercase hex digest
+        // (`printf abc | shasum -a 256`).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.mp3");
+        std::fs::write(&path, b"abc").unwrap();
+
+        assert_eq!(
+            hash_file(&path, |_, _| {}).unwrap(),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

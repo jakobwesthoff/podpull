@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
+use super::lower_hex;
 use crate::feed::Episode;
 
 /// Maximum length for the title portion of a filename
@@ -117,7 +118,7 @@ pub fn generate_unique_filename_stem(episode: &Episode, claimed_keys: &HashSet<S
         .guid
         .as_deref()
         .unwrap_or(episode.enclosure.url.as_str());
-    let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let hash = lower_hex(&Sha256::digest(identity.as_bytes()));
     let hashed = format!("{}-{}", base, &hash[..HASH_SUFFIX_LENGTH]);
 
     let mut candidate = hashed.clone();
@@ -602,7 +603,7 @@ mod tests {
     }
 
     fn hash_prefix(identity: &str) -> String {
-        format!("{:x}", Sha256::digest(identity.as_bytes()))[..8].to_string()
+        lower_hex(&Sha256::digest(identity.as_bytes()))[..8].to_string()
     }
 
     #[test]
@@ -644,6 +645,20 @@ mod tests {
         assert_eq!(
             generate_unique_filename_stem(&episode, &claims(&["2024-12-19-NEUZUGA\u{0308}NGE #4"])),
             "2024-12-19-102522-Neuzug\u{00e4}nge #4"
+        );
+    }
+
+    #[test]
+    fn guid_hash_suffix_keeps_the_names_of_earlier_versions() {
+        // Stored files carry this suffix, so its spelling must not change:
+        // the first eight lowercase hex digits of the GUID's SHA-256
+        // (`printf nomad-guid | shasum -a 256`).
+        let episode = make_nomad_episode(Some("nomad-guid"), Some(NOMAD_DATE));
+        let claimed = claims(&["2024-12-19-Sega Nomad", "2024-12-19-102522-Sega Nomad"]);
+
+        assert_eq!(
+            generate_unique_filename_stem(&episode, &claimed),
+            "2024-12-19-Sega Nomad-5c08ddeb"
         );
     }
 

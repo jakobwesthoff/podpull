@@ -577,7 +577,10 @@ mod tests {
         write_episode_metadata(
             &episode,
             &audio_filename,
-            Some(format!("sha256:{:x}", Sha256::digest(audio))),
+            Some(format!(
+                "sha256:{}",
+                crate::episode::lower_hex(&Sha256::digest(audio))
+            )),
             &dir.join(format!("{}.json", stem)),
         )
         .unwrap();
