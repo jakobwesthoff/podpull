@@ -50,8 +50,12 @@ Each podcast gets its own directory containing the audio files and metadata:
 ├── 2024-01-15-episode-title.mp3      # Audio file
 ├── 2024-01-15-episode-title.json     # Episode metadata
 ├── 2024-01-08-another-episode.mp3
-└── 2024-01-08-another-episode.json
+├── 2024-01-08-another-episode.json
+├── 2024-01-08-093000-another-episode.mp3   # Second episode with the same title and date
+└── 2024-01-08-093000-another-episode.json
 ```
+
+Episodes that share a title and publication date cannot share a filename. One keeps the usual name, the other gets its publication time added (`HHMMSS`). If that name is taken as well, or the episode has no publication date, a short hash of its GUID is appended instead. New downloads avoid the names of all existing files, so an earlier download is not overwritten. Names that differ only in letter case or Unicode normalization count as the same name: APFS treats them as one file, and network shares mounted on macOS can list a name in a different Unicode normalization than it was written in.
 
 No database. No config files. No hidden state. podpull looks at what's already in the output directory and only downloads what's missing. Want to re-download an episode? Delete its files. Want to start fresh? Delete the directory. Want to know what you have? Just look.
 
@@ -109,7 +113,7 @@ podpull identifies episodes using their **GUID** (a unique identifier from the R
 > [!NOTE]
 > **When Re-downloads Might Happen**
 >
-> If a podcast host changes their feed URL structure without preserving GUIDs, episodes may be re-downloaded. This is uncommon but can happen during podcast platform migrations.
+> If a podcast host changes their feed URL structure without preserving GUIDs, episodes may be re-downloaded. This is uncommon but can happen during podcast platform migrations. The earlier files are kept; a re-downloaded episode whose title and date did not change is stored next to them with its publication time in the filename.
 
 ### Safe Downloads
 
@@ -118,6 +122,7 @@ podpull uses atomic downloads to ensure file integrity:
 - Episodes download to a temporary `.partial` file first
 - A SHA-256 hash is computed during download and stored in the metadata
 - Only when the download completes successfully is the file renamed to its final name
+- Episode metadata is written the same way, through a `.partial` file that is renamed into place
 - If a download is interrupted, the `.partial` file is automatically cleaned up on the next sync
 
 This means you'll never have corrupted files from interrupted downloads, and you can safely run podpull repeatedly.
@@ -135,6 +140,10 @@ Failed episodes:
 ```
 
 Use `-q` (quiet mode) to suppress progress output but still see the final summary.
+
+When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. A mismatch is listed among the failed episodes; the file itself is left untouched. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch. Delete the reported audio file and its `.json` file to download the episode again.
+
+Episode metadata files that cannot be read are reported as warnings. Their names stay reserved, so if the episode they belonged to is still in the feed, it is downloaded again under a new name.
 
 ### Exit Codes
 
