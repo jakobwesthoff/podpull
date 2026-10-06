@@ -11,6 +11,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::DownloadError;
 use crate::feed::Episode;
+use crate::fs_sync::sync_file;
 use crate::http::HttpClient;
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 
@@ -199,13 +200,18 @@ pub async fn stage_download<C: HttpClient>(
 
     // Without syncing, a power loss or a crashed file server could persist
     // the later rename before the data and leave a truncated file under the
-    // final name.
-    file.sync_all()
+    // final name. Flushing first hands every buffered write to the file, so
+    // the synchronous sync sees all of them.
+    let write_failed = |e| DownloadError::FileWriteFailed {
+        path: partial_path.clone(),
+        source: e,
+    };
+    file.flush().await.map_err(write_failed)?;
+    let file = file.into_std().await;
+    tokio::task::spawn_blocking(move || sync_file(&file))
         .await
-        .map_err(|e| DownloadError::FileWriteFailed {
-            path: partial_path.clone(),
-            source: e,
-        })?;
+        .map_err(|e| write_failed(std::io::Error::other(e)))?
+        .map_err(write_failed)?;
 
     // Finalize hash
     let content_hash = content_hash(hasher);

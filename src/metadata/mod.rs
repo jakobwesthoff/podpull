@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::MetadataError;
+use crate::fs_sync::sync_file;
 
 mod episode;
 mod podcast;
@@ -68,7 +69,7 @@ fn stage_metadata_file(path: &Path, contents: &[u8]) -> Result<StagedMetadata, M
 
     let mut file = std::fs::File::create(&partial_path).map_err(write_failed)?;
     file.write_all(contents).map_err(write_failed)?;
-    file.sync_all().map_err(write_failed)?;
+    sync_file(&file).map_err(write_failed)?;
 
     Ok(StagedMetadata {
         partial_path,

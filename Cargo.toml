@@ -21,6 +21,7 @@ console = "0.16.2"
 futures = "0.3"
 html-escape = "0.2.13"
 indicatif = "0.18.3"
+libc = "0.2.190"
 reqwest = { version = "0.13.1", features = ["stream"] }
 rss = "2.0.12"
 sanitize-filename = "0.6.0"

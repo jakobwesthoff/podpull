@@ -5,6 +5,7 @@
 pub mod episode;
 pub mod error;
 pub mod feed;
+mod fs_sync;
 pub mod http;
 pub mod metadata;
 pub mod progress;
