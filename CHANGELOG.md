@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-06
+
+### Changed
+
+- The package on crates.io no longer contains the project website, its demo recording and repository tooling
+
 ## [2.0.1] - 2026-10-06
 
 ### Fixed
