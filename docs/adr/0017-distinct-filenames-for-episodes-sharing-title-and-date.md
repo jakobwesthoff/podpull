@@ -38,7 +38,7 @@ Comparing names as plain strings is not enough to detect such a collision. A net
 
 **Episode metadata is written atomically**, through a `.partial` file that is renamed into place.
 
-**Audio a collision points at is verified, not repaired.** When a planned episode's base stem belongs to an episode with readable metadata and a recorded `content_hash`, that audio file is hashed before downloads start. A mismatch is reported as `StoredAudioMismatch` and listed among the failed episodes; the file is left untouched.
+**Audio a collision points at is verified, and repaired only on request.** When a planned episode's base stem belongs to an episode with readable metadata and a recorded `content_hash`, that audio file is hashed before downloads start. A mismatch is reported as `StoredAudioMismatch`. By default it is listed among the failed episodes and the file is left untouched. With `SyncOptions::repair_mismatched_audio` (CLI `--repair`), an episode still in the feed is downloaded again under its existing audio and metadata filenames; this repair is not subject to `--limit`.
 
 **Unreadable metadata is reported** as `MetadataUnreadable`. Its stem stays claimed.
 

@@ -55,6 +55,11 @@ struct Args {
     /// Quiet mode - suppress progress output
     #[arg(short, long)]
     quiet: bool,
+
+    /// Download an existing episode again when a new episode would take its
+    /// filename and its audio no longer matches the hash recorded at download
+    #[arg(long)]
+    repair: bool,
 }
 
 /// Progress reporter using indicatif for terminal output
@@ -275,10 +280,12 @@ impl ProgressReporter for IndicatifReporter {
             ProgressEvent::StoredAudioMismatch {
                 episode_title,
                 audio_filename,
+                repairing,
             } => {
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    stored_audio_mismatch_message(&episode_title, &audio_filename).yellow()
+                    stored_audio_mismatch_message(&episode_title, &audio_filename, repairing)
+                        .yellow()
                 ));
             }
 
@@ -319,10 +326,20 @@ fn unreadable_metadata_message(path: &Path) -> String {
     format!("Could not read episode metadata {}", path.display())
 }
 
-fn stored_audio_mismatch_message(episode_title: &str, audio_filename: &str) -> String {
+fn stored_audio_mismatch_message(
+    episode_title: &str,
+    audio_filename: &str,
+    repairing: bool,
+) -> String {
     format!(
-        "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded",
-        episode_title, audio_filename
+        "Audio of \"{}\" ({}) does not match the hash recorded when it was downloaded{}",
+        episode_title,
+        audio_filename,
+        if repairing {
+            "; downloading it again"
+        } else {
+            ""
+        }
     )
 }
 
@@ -353,6 +370,15 @@ fn available_title_width(index_width: usize) -> usize {
     term_width.saturating_sub(fixed_width).max(20) // minimum 20 chars for title
 }
 
+fn sync_options(args: &Args) -> SyncOptions {
+    SyncOptions {
+        limit: args.limit,
+        max_concurrent: args.concurrent,
+        continue_on_error: true,
+        repair_mismatched_audio: args.repair,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -366,11 +392,7 @@ async fn main() -> Result<()> {
 
     let client = ReqwestClient::new();
 
-    let options = SyncOptions {
-        limit: args.limit,
-        max_concurrent: args.concurrent,
-        continue_on_error: true,
-    };
+    let options = sync_options(&args);
 
     let reporter: SharedProgressReporter = if args.quiet {
         NoopReporter::shared()
@@ -430,15 +452,49 @@ mod tests {
         reporter.report(ProgressEvent::StoredAudioMismatch {
             episode_title: "Sega Nomad".to_string(),
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+            repairing: true,
         });
     }
 
     #[test]
     fn stored_audio_mismatch_message_names_episode_and_file() {
         assert_eq!(
-            stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
+            stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3", false),
             "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
              the hash recorded when it was downloaded"
         );
+    }
+
+    #[test]
+    fn stored_audio_mismatch_message_announces_repair() {
+        assert_eq!(
+            stored_audio_mismatch_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3", true),
+            "Audio of \"Sega Nomad\" (2024-12-19-Sega Nomad.mp3) does not match \
+             the hash recorded when it was downloaded; downloading it again"
+        );
+    }
+
+    #[test]
+    fn sync_options_carry_the_command_line_arguments() {
+        let args = Args::try_parse_from([
+            "podpull", "-c", "5", "-l", "10", "--repair", "feed.xml", "out",
+        ])
+        .unwrap();
+
+        let options = sync_options(&args);
+
+        assert_eq!(options.limit, Some(10));
+        assert_eq!(options.max_concurrent, 5);
+        assert!(options.continue_on_error);
+        assert!(options.repair_mismatched_audio);
+    }
+
+    #[test]
+    fn repair_flag_is_off_by_default() {
+        let args = Args::try_parse_from(["podpull", "feed.xml", "out"]).unwrap();
+        assert!(!args.repair);
+
+        let args = Args::try_parse_from(["podpull", "--repair", "feed.xml", "out"]).unwrap();
+        assert!(args.repair);
     }
 }

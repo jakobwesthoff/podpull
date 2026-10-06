@@ -37,6 +37,7 @@ podpull <FEED_URL> [OPTIONS]
 | `-c, --concurrent <N>` | 3 | Maximum concurrent downloads |
 | `-l, --limit <N>` | — | Only download the N most recent undownloaded episodes |
 | `-q, --quiet` | — | Suppress progress output |
+| `--repair` | — | Download an existing episode again when its audio fails the collision check (see Error Handling) |
 | `-h, --help` | — | Print help |
 | `-V, --version` | — | Print version |
 
@@ -141,7 +142,7 @@ Failed episodes:
 
 Use `-q` (quiet mode) to suppress progress output but still see the final summary.
 
-When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. A mismatch is listed among the failed episodes; the file itself is left untouched. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch. Delete the reported audio file and its `.json` file to download the episode again.
+When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. A mismatch is listed among the failed episodes; the file itself is left untouched. podpull 1.1.2 and earlier downloaded episodes sharing title and date into one file at the same time, which leaves such a mismatch. Delete the reported audio file and its `.json` file to download the episode again, or run with `--repair`: podpull then downloads the episode again under its existing filename, provided it is still in the feed. Without `--repair` the file is never replaced, because audio tags edited after the download also cause a mismatch.
 
 Episode metadata files that cannot be read are reported as warnings. Their names stay reserved, so if the episode they belonged to is still in the feed, it is downloaded again under a new name.
 

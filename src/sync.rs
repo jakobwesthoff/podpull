@@ -13,7 +13,9 @@ use url::Url;
 
 use crate::episode::{DownloadContext, download_episode, hash_file};
 use crate::error::{FeedError, SyncError};
-use crate::feed::{fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file};
+use crate::feed::{
+    Episode, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
+};
 use crate::http::HttpClient;
 use crate::metadata::{write_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
@@ -28,6 +30,9 @@ pub struct SyncOptions {
     pub max_concurrent: usize,
     /// Continue downloading if individual episodes fail
     pub continue_on_error: bool,
+    /// Download an existing episode again when a new episode collides with
+    /// it and its audio no longer matches the hash recorded at download
+    pub repair_mismatched_audio: bool,
 }
 
 impl Default for SyncOptions {
@@ -36,6 +41,7 @@ impl Default for SyncOptions {
             limit: None,
             max_concurrent: 3,
             continue_on_error: true,
+            repair_mismatched_audio: false,
         }
     }
 }
@@ -117,15 +123,28 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let new_episodes_count = plan.to_download.len();
 
     // Apply limit if specified
-    let to_download: Vec<_> = if let Some(limit) = options.limit {
+    let mut to_download: Vec<_> = if let Some(limit) = options.limit {
         plan.to_download.into_iter().take(limit).collect()
     } else {
         plan.to_download
     };
+    let limited = new_episodes_count.saturating_sub(to_download.len());
 
+    let verification = verify_collided_audio(
+        &to_download,
+        &state,
+        &plan.already_present,
+        options.repair_mismatched_audio,
+        &reporter,
+    )
+    .await;
+
+    // A repair replaces an episode that is already present rather than
+    // adding a new one, so the limit does not apply to it and it no longer
+    // counts as existing.
+    let existing = plan.already_present.len() - verification.repairs.len();
+    to_download.splice(0..0, verification.repairs);
     let total_to_download = to_download.len();
-    let existing = plan.already_present.len();
-    let limited = new_episodes_count.saturating_sub(total_to_download);
 
     reporter.report(ProgressEvent::SyncPlanReady {
         podcast_title: podcast.title.clone(),
@@ -153,8 +172,6 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
         });
     }
 
-    let verification_failures = verify_collided_audio(&to_download, &state, &reporter).await;
-
     // Download episodes in parallel using a slot pool
     // The slot pool serves dual purpose: limits concurrency AND provides stable slot IDs
     let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(options.max_concurrent);
@@ -164,8 +181,8 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     let slot_rx = Arc::new(Mutex::new(slot_rx));
 
     let downloaded_count = Arc::new(AtomicUsize::new(0));
-    let failed_count = Arc::new(AtomicUsize::new(verification_failures.len()));
-    let failed_episodes = Arc::new(Mutex::new(verification_failures));
+    let failed_count = Arc::new(AtomicUsize::new(verification.failures.len()));
+    let failed_episodes = Arc::new(Mutex::new(verification.failures));
 
     let output_dir = output_dir.to_path_buf();
     let client = client.clone();
@@ -277,19 +294,31 @@ pub async fn sync_podcast<C: HttpClient + Clone + 'static>(
     })
 }
 
+/// Outcome of checking the audio files that planned downloads collide with
+struct Verification {
+    /// Mismatches left in place, as (episode title, message) pairs
+    failures: Vec<(String, String)>,
+    /// Downloads that replace mismatched audio of episodes still in the feed
+    repairs: Vec<PlannedDownload>,
+}
+
 /// Check the audio files that planned downloads collide with
 ///
 /// podpull 1.1.2 and earlier downloaded episodes sharing a filename into one
 /// file at the same time, leaving bytes of both behind. Such a file no longer
-/// matches the hash its metadata recorded. A mismatch is reported, never
-/// repaired, because tags edited by the user cause one as well. Returns the
-/// mismatches as (episode title, message) pairs for the failure summary.
+/// matches the hash its metadata recorded. Tags edited by the user cause a
+/// mismatch as well, so a mismatch is only repaired when `repair` is set:
+/// the episode is then downloaded again under its existing names, which
+/// requires it to still be in the feed (`present`).
 async fn verify_collided_audio(
     to_download: &[PlannedDownload],
     state: &OutputState,
+    present: &[Episode],
+    repair: bool,
     reporter: &SharedProgressReporter,
-) -> Vec<(String, String)> {
+) -> Verification {
     let mut failures = Vec::new();
+    let mut repairs = Vec::new();
     let mut verified = HashSet::new();
 
     for key in to_download
@@ -310,23 +339,38 @@ async fn verify_collided_audio(
             .expect("hashing a file does not panic");
 
         // A missing or unreadable file has nothing left to verify.
-        if actual_hash.is_ok_and(|hash| &hash != recorded_hash) {
-            reporter.report(ProgressEvent::StoredAudioMismatch {
-                episode_title: stored.title.clone(),
+        if !actual_hash.is_ok_and(|hash| &hash != recorded_hash) {
+            continue;
+        }
+
+        let owner = present
+            .iter()
+            .find(|episode| repair && episode.guid.is_some() && episode.guid == stored.guid);
+        reporter.report(ProgressEvent::StoredAudioMismatch {
+            episode_title: stored.title.clone(),
+            audio_filename: stored.audio_filename.clone(),
+            repairing: owner.is_some(),
+        });
+
+        match owner {
+            Some(episode) => repairs.push(PlannedDownload {
+                episode: episode.clone(),
                 audio_filename: stored.audio_filename.clone(),
-            });
-            failures.push((
+                metadata_filename: stored.metadata_filename.clone(),
+                collides_with: None,
+            }),
+            None => failures.push((
                 stored.title.clone(),
                 format!(
                     "Audio file {} does not match the hash recorded when it was downloaded. \
                      Delete it and its .json file to download it again.",
                     stored.audio_filename
                 ),
-            ));
+            )),
         }
     }
 
-    failures
+    Verification { failures, repairs }
 }
 
 #[cfg(test)]
@@ -868,14 +912,15 @@ mod tests {
         (result, reporter.events())
     }
 
-    fn mismatch_events(events: &[ProgressEvent]) -> Vec<(String, String)> {
+    fn mismatch_events(events: &[ProgressEvent]) -> Vec<(String, String, bool)> {
         events
             .iter()
             .filter_map(|event| match event {
                 ProgressEvent::StoredAudioMismatch {
                     episode_title,
                     audio_filename,
-                } => Some((episode_title.clone(), audio_filename.clone())),
+                    repairing,
+                } => Some((episode_title.clone(), audio_filename.clone(), *repairing)),
                 _ => None,
             })
             .collect()
@@ -904,7 +949,8 @@ mod tests {
             mismatch_events(&events),
             vec![(
                 "SFT Bits: Sega Nomad".to_string(),
-                "2024-12-19-SFT Bits Sega Nomad.mp3".to_string()
+                "2024-12-19-SFT Bits Sega Nomad.mp3".to_string(),
+                false
             )]
         );
         // Reporting only: the file may hold edits made by the user.
@@ -1020,5 +1066,104 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(SyncError::AllDownloadsFailed)));
+    }
+
+    // =========================================================
+    // Opt-in repair of damaged audio
+    // =========================================================
+
+    async fn sync_repairing(
+        dir: &Path,
+        items: &[FeedItem],
+        limit: Option<usize>,
+    ) -> (SyncResult, Vec<ProgressEvent>) {
+        let reporter = Arc::new(RecordingReporter::default());
+        let options = SyncOptions {
+            limit,
+            repair_mismatched_audio: true,
+            ..Default::default()
+        };
+        let result = sync_podcast(
+            &client_for(items),
+            "https://example.com/feed.xml",
+            dir,
+            &options,
+            reporter.clone(),
+        )
+        .await
+        .unwrap();
+        (result, reporter.events())
+    }
+
+    #[tokio::test]
+    async fn sync_repairs_damaged_audio_in_place_when_enabled() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        let audio = dir.path().join(format!("{}.mp3", NOMAD_STEM));
+        std::fs::write(&audio, b"interleaved audio").unwrap();
+
+        let (result, events) =
+            sync_repairing(dir.path(), &[NOMAD_REUPLOAD, NOMAD_ORIGINAL], None).await;
+
+        assert_eq!(result.downloaded, 2);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.failed, 0);
+        assert_eq!(std::fs::read(&audio).unwrap(), b"fake audio");
+        let metadata = crate::metadata::read_episode_metadata(
+            &dir.path().join(format!("{}.json", NOMAD_STEM)),
+        )
+        .unwrap();
+        assert_eq!(metadata.guid.as_deref(), Some("nomad-reupload"));
+        assert_eq!(metadata.content_hash, hash_file(&audio).ok());
+        assert_eq!(
+            mismatch_events(&events),
+            vec![(
+                "SFT Bits: Sega Nomad".to_string(),
+                "2024-12-19-SFT Bits Sega Nomad.mp3".to_string(),
+                true
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_repairs_damaged_audio_beyond_the_limit() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        std::fs::write(dir.path().join(format!("{}.mp3", NOMAD_STEM)), b"damaged").unwrap();
+        let older = FeedItem {
+            title: "Older Episode",
+            pub_date: "Mon, 01 Jan 2024 12:00:00 GMT",
+            guid: "older",
+        };
+
+        // The limit admits only the newest new episode; the repair of the
+        // episode it collides with comes on top.
+        let (result, _) = sync_repairing(
+            dir.path(),
+            &[NOMAD_REUPLOAD, NOMAD_ORIGINAL, older],
+            Some(1),
+        )
+        .await;
+
+        assert_eq!(result.downloaded, 2);
+        assert_eq!(result.failed, 0);
+        assert!(!recorded_episodes(dir.path()).contains_key("older"));
+    }
+
+    #[tokio::test]
+    async fn sync_reports_damage_it_cannot_repair() {
+        let dir = tempdir().unwrap();
+        // The damaged episode has left the feed, so there is nothing to
+        // download it from.
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_REUPLOAD, b"clean audio");
+        let audio = dir.path().join(format!("{}.mp3", NOMAD_STEM));
+        std::fs::write(&audio, b"damaged").unwrap();
+
+        let (result, events) = sync_repairing(dir.path(), &[NOMAD_ORIGINAL], None).await;
+
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.failed, 1);
+        assert_eq!(std::fs::read(&audio).unwrap(), b"damaged");
+        assert!(!mismatch_events(&events)[0].2);
     }
 }

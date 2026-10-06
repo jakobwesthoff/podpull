@@ -37,8 +37,11 @@ pub struct OutputState {
 #[derive(Debug, Clone)]
 pub struct StoredEpisode {
     pub title: String,
+    pub guid: Option<String>,
     /// Name of the audio file, spelled the way the directory lists it
     pub audio_filename: String,
+    /// Name of the metadata file, spelled the way the directory lists it
+    pub metadata_filename: String,
     /// Hash of the audio as downloaded, if the metadata records one
     pub content_hash: Option<String>,
 }
@@ -192,7 +195,9 @@ pub fn scan_output_dir(
                     filename_claim_key(&stem),
                     StoredEpisode {
                         title: metadata.title,
+                        guid: metadata.guid.clone(),
                         audio_filename,
+                        metadata_filename: format!("{}.json", stem),
                         content_hash: metadata.content_hash,
                     },
                 );
@@ -476,6 +481,8 @@ mod tests {
         let stored = &state.stored_episodes[&filename_claim_key("2019-12-27-Neuzug\u{00e4}nge #4")];
         assert_eq!(stored.title, "Neuzug\u{00e4}nge #4");
         assert_eq!(stored.audio_filename, format!("{}.mp3", listed_stem));
+        assert_eq!(stored.metadata_filename, format!("{}.json", listed_stem));
+        assert_eq!(stored.guid.as_deref(), Some("guid-1"));
         assert_eq!(stored.content_hash.as_deref(), Some("sha256:abc"));
     }
 
@@ -652,7 +659,9 @@ mod tests {
             key.clone(),
             StoredEpisode {
                 title: "Sega Nomad".to_string(),
+                guid: Some("guid-stored".to_string()),
                 audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+                metadata_filename: "2024-12-19-Sega Nomad.json".to_string(),
                 content_hash: None,
             },
         );
