@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Before downloading an episode whose usual filename is taken, podpull checks the existing audio file against the hash recorded when it was downloaded and lists a mismatch under "Damaged episodes"
-- `--verify` option: checks every downloaded audio file against its recorded hash and lists mismatches; reads the whole archive
-- `--repair` option: like `--verify`, and downloads damaged episodes again under their existing filenames, provided they are still in the feed in the same audio format
-- Exit code 2 when some downloads failed or damaged audio was found but the run got something done
+- `--verify` option: checks every downloaded audio file against its recorded hash and lists mismatched or missing audio; reads the whole archive
+- `--repair` option: like `--verify`, and downloads damaged or missing episodes again under their existing filenames, provided they are still in the feed in the same audio format
+- The sync summary lists repaired episodes and episodes whose audio was already stored
+- Exit code 2 when some downloads failed, damaged or missing audio was found, or a warning was reported, such as a leftover `.partial` file that cannot be removed or unreadable metadata. Such a file keeps every run at exit code 2 until it is dealt with
 
 ### Fixed
 
@@ -25,15 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An episode re-issued under a new GUID is no longer stored a second time when its old GUID left the feed, title and publication time stayed the same and the audio is byte-identical; the new GUID is added to the stored episode's metadata
 - In feeds without GUIDs, an episode is no longer downloaded again when only an access token in its URL changed and title, publication time and file name stay the same
 - If an episode's metadata cannot be written, its freshly downloaded audio is removed again instead of being left without metadata, which made the next sync store the episode a second time
-- Quiet mode (`-q`) lists failed and damaged episodes on stderr instead of hiding them
+- Quiet mode (`-q`) lists failed and damaged episodes and warnings on stderr instead of hiding them
+- `-c 0` is rejected with a message instead of crashing
 
 ### Changed
 
-- Downloaded audio, episode metadata and `podcast.json` are written to `.partial` files, synced to disk and then renamed into place
+- Downloaded audio, episode metadata and `podcast.json` are written to `.partial` files, synced to disk and then renamed into place. On filesystems without a full flush to the drive, such as SMB shares mounted on macOS, the sync is a plain `fsync`
 - Episode metadata files that hold no valid metadata are reported as a warning with the reason instead of being skipped silently. A metadata file that cannot be read from disk at all stops the sync with an error
 - Leftover `.partial` files that cannot be removed are reported, and a download into such a path fails with a message to delete the file
 - The status line shows repairs apart from the episode limit
-- Library: `create_sync_plan` takes the limit and lists collisions; `PlannedDownload` carries the filenames; `OutputState` is read through methods; `SyncOptions`, `SyncResult`, `ProgressEvent` and the new plan types are `#[non_exhaustive]`; `sync_podcast` accepts clients that are neither `Clone` nor `'static`; `continue_on_error: false` stops starting downloads after the first failure; `generate_filename` is deprecated
+- Library: `create_sync_plan` takes the limit and lists collisions; `PlannedDownload` carries the filenames; `OutputState` is read through methods; `SyncOptions`, `SyncResult`, `ProgressEvent` and the new plan types are `#[non_exhaustive]`; `sync_podcast` accepts clients that are neither `Clone` nor `'static`; `continue_on_error: false` stops starting downloads after the first failure; `generate_filename` is deprecated; `EpisodeMetadata`, `PodcastMetadata`, `DownloadContext` and `DownloadResult` are `#[non_exhaustive]`, with `DownloadContext::new` to build a context; the staged download and metadata functions are exported at the crate root
 
 ## [1.1.2] - 2026-02-01
 

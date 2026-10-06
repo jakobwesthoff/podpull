@@ -34,11 +34,11 @@ podpull <FEED_URL> [OPTIONS]
 |--------|---------|-------------|
 | `<feed>` | Required | RSS feed URL or path to local file |
 | `<output-dir>` | Required | Directory for downloaded episodes |
-| `-c, --concurrent <N>` | 3 | Maximum concurrent downloads |
+| `-c, --concurrent <N>` | 3 | Maximum concurrent downloads (at least 1) |
 | `-l, --limit <N>` | — | Only download the N most recent undownloaded episodes |
 | `-q, --quiet` | — | Suppress progress output |
-| `--verify` | — | Check every downloaded audio file against its recorded hash and report damaged ones (reads the whole archive) |
-| `--repair` | — | Like `--verify`, and download damaged episodes still in the feed again under their existing filenames |
+| `--verify` | — | Check every downloaded audio file against its recorded hash and report damaged or missing ones (reads the whole archive) |
+| `--repair` | — | Like `--verify`, and download damaged or missing episodes still in the feed again under their existing filenames |
 | `-h, --help` | — | Print help |
 | `-V, --version` | — | Print version |
 
@@ -99,14 +99,15 @@ Fields the feed does not provide are left out. An episode that the feed re-issue
 
 ### How It Works
 
-podpull follows a 4-phase sync process:
+podpull follows a 5-phase sync process:
 
 | Phase | What Happens |
 |-------|-------------|
 | **1. Fetching** | Downloads the RSS feed from the URL (or reads a local file) |
 | **2. Parsing** | Extracts podcast metadata and episode list from the feed |
 | **3. Scanning** | Reads existing episode metadata from the output directory to determine what's already downloaded |
-| **4. Downloading** | Downloads missing episodes in parallel, showing progress for each |
+| **4. Checking** | Checks stored audio against its recorded hash: the files new downloads would collide with, or every file with `--verify` and `--repair` |
+| **5. Downloading** | Downloads new episodes and repairs in parallel, showing progress for each |
 
 The scanning phase displays a progress bar when processing many existing episodes — this is especially helpful on network shares where metadata reads can be slow.
 
@@ -133,7 +134,8 @@ podpull uses atomic downloads to ensure file integrity:
 - A SHA-256 hash is computed during download and stored in the metadata
 - Only when the download completes successfully is the file renamed to its final name
 - Episode metadata is written to its own `.partial` file before the audio is renamed, then renamed right after it; `podcast.json` goes through a `.partial` file as well
-- Both are synced to disk before they are renamed
+- Both are synced to disk before they are renamed. Where the filesystem does not support a full flush to the drive, such as SMB shares mounted on macOS, podpull falls back to a plain `fsync`, which hands the data to the file server
+- The renames themselves are not synced. After a power loss the metadata can be in place while its audio is not; `--verify` lists that audio as missing and `--repair` downloads it again
 - If the metadata cannot be written, the audio of a new download is removed again, so no audio is left without metadata
 - If a download is interrupted, the `.partial` files are automatically cleaned up on the next sync; a `.partial` file that cannot be removed is reported, and its episode cannot be downloaded until it is deleted
 
@@ -152,9 +154,9 @@ Failed episodes:
   ✗ Episode 41 - HTTP error 404 for https://example.com/episode-41.mp3
 ```
 
-Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes are still listed, on stderr.
+Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes and warnings are still listed, on stderr.
 
-**Damaged audio.** When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. If the last sync with podpull 1.1.2 or earlier downloaded two episodes sharing title and date at the same time, that file holds bytes of both and fails this check. `--verify` runs the same check on every audio file in the directory, which reads the whole archive. A mismatch is listed under "Damaged episodes" and the file is left untouched, because audio tags edited after the download cause a mismatch as well. `--repair` downloads a damaged episode again under its existing filename, provided it is still in the feed in the same audio format; otherwise the list says why it cannot be repaired. Deleting the audio file and its `.json` file also makes the next sync download the episode again.
+**Damaged audio.** When a new episode would take the name of an existing file, podpull first checks that file against the `content_hash` in its metadata. If the last sync with podpull 1.1.2 or earlier downloaded two episodes sharing title and date at the same time, that file holds bytes of both and fails this check. `--verify` runs the same check on every audio file in the directory, which reads the whole archive. A mismatch is listed under "Damaged episodes" and the file is left untouched, because audio tags edited after the download cause a mismatch as well. `--repair` downloads a damaged episode again under its existing filename, provided it is still in the feed in the same audio format; otherwise the list says why it cannot be repaired. A checked episode whose audio file the directory no longer lists is listed as missing and repaired the same way. Deleting the audio file and its `.json` file also makes the next sync download the episode again.
 
 **Unreadable metadata.** An episode metadata file whose content is not valid metadata is reported as a warning with the reason. Its name stays reserved, so if the episode it belonged to is still in the feed, it is downloaded again under a new name. If a metadata file cannot be read from disk at all, for example because a network share dropped the connection, the sync stops with an error instead, and the next run tries again.
 
@@ -164,9 +166,11 @@ podpull returns meaningful exit codes for scripting:
 
 | Exit Code | Meaning |
 |-----------|---------|
-| `0` | Success (episodes downloaded or already up to date) |
-| `1` | Failure (no episodes downloaded and at least one failure occurred) |
-| `2` | Partial failure (some downloads failed or damaged audio was found, but the run got something done) |
+| `0` | Success (episodes downloaded or already up to date, nothing to report) |
+| `1` | Failure (downloads failed and no episode was downloaded, repaired or recorded as already stored) |
+| `2` | Problems found (some downloads failed, damaged or missing audio was found, or a warning was reported); code 1 takes precedence when downloads failed and none succeeded |
+
+Warnings are leftover `.partial` files that cannot be removed, unreadable episode metadata and audio that cannot be read for checking. A leftover `.partial` file or unreadable metadata stays until you deal with it, so every run exits with code 2 until then.
 
 ### Examples
 
@@ -203,8 +207,8 @@ Episodes are sorted by publication date (newest first), so you always get the mo
 
 **Cron job with error detection:**
 ```bash
-# In crontab - sync daily, log errors
-0 3 * * * podpull -q https://example.com/feed.xml ~/Podcasts/show/ 2>&1 | logger -t podpull || echo "Sync failed" | mail -s "podpull error" you@example.com
+# In crontab - sync daily, log the output, mail it when podpull exits with 1 or 2
+0 3 * * * out=$(podpull -q https://example.com/feed.xml ~/Podcasts/show/ 2>&1); status=$?; echo "$out" | logger -t podpull; [ $status -eq 0 ] || echo "$out" | mail -s "podpull exit $status" you@example.com
 ```
 
 **Gradual archive download (10 episodes at a time):**
