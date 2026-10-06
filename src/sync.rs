@@ -245,7 +245,15 @@ pub async fn sync_podcast<C: HttpClient>(
     // Write podcast metadata
     write_podcast_metadata(&podcast, output_dir)?;
 
-    let totals = download_all(client, to_download, &state, &reporter, options).await;
+    let totals = download_all(
+        client,
+        to_download,
+        &state,
+        &verification.intact,
+        &reporter,
+        options,
+    )
+    .await;
     let downloaded = totals.downloaded;
     let failed_eps = totals.failed_episodes;
     let failed = failed_eps.len();
@@ -379,6 +387,7 @@ async fn download_all<C: HttpClient>(
     client: &C,
     to_download: Vec<PlannedDownload>,
     state: &OutputState,
+    intact: &HashSet<String>,
     reporter: &SharedProgressReporter,
     options: &SyncOptions,
 ) -> DownloadTotals {
@@ -413,7 +422,7 @@ async fn download_all<C: HttpClient>(
                         total_to_download,
                     };
                     let attempt = AssertUnwindSafe(download_planned(
-                        client, &planned, state, &context, reporter,
+                        client, &planned, state, intact, &context, reporter,
                     ))
                     .catch_unwind()
                     .await;
@@ -488,6 +497,7 @@ async fn download_planned<C: HttpClient>(
     client: &C,
     planned: &PlannedDownload,
     state: &OutputState,
+    intact: &HashSet<String>,
     context: &DownloadContext,
     reporter: &SharedProgressReporter,
 ) -> Result<Placed, String> {
@@ -507,7 +517,8 @@ async fn download_planned<C: HttpClient>(
     // names no candidates for a repair, which is meant to replace its file.
     if let Some(guid) = &episode.guid
         && let Some(stored) =
-            replaced_with_identical_audio(output_dir, planned, staged_audio.content_hash()).await
+            replaced_with_identical_audio(output_dir, planned, staged_audio.content_hash(), intact)
+                .await
     {
         staged_audio.discard().await;
         let stored_metadata_path = output_dir.join(&stored.metadata_filename);
@@ -635,14 +646,19 @@ enum Placed {
 
 /// The first stored episode the planned download may have replaced whose
 /// audio is identical to the download's
+///
+/// Audio in `intact` was found to match its recorded hash earlier in this
+/// run and is not read a second time.
 async fn replaced_with_identical_audio<'a>(
     output_dir: &Path,
     planned: &'a PlannedDownload,
     content_hash: &str,
+    intact: &HashSet<String>,
 ) -> Option<&'a StoredEpisode> {
     for stored in &planned.replaced_candidates {
         if stored.content_hash.as_deref() == Some(content_hash)
-            && stored_audio_still_matches(output_dir, stored, content_hash).await
+            && (intact.contains(&stored.audio_filename)
+                || stored_audio_still_matches(output_dir, stored, content_hash).await)
         {
             return Some(stored);
         }
@@ -675,6 +691,8 @@ struct Verification {
     /// GUIDs of episodes in the feed whose stored audio was repaired or
     /// found damaged
     affected_present_guids: HashSet<String>,
+    /// Audio filenames of stored audio found to match its recorded hash
+    intact: HashSet<String>,
 }
 
 /// Check stored audio against the hashes recorded when it was downloaded
@@ -695,6 +713,7 @@ async fn verify_stored_audio(
         damaged: Vec::new(),
         repairs: Vec::new(),
         affected_present_guids: HashSet::new(),
+        intact: HashSet::new(),
     };
 
     for target in targets {
@@ -722,7 +741,10 @@ async fn verify_stored_audio(
                 .expect("hashing a file does not panic");
 
             match actual_hash {
-                Ok(hash) if &hash == recorded_hash => continue,
+                Ok(hash) if &hash == recorded_hash => {
+                    verification.intact.insert(stored.audio_filename.clone());
+                    continue;
+                }
                 Ok(_) => DamageKind::Mismatch,
                 Err(e) => {
                     reporter.report(ProgressEvent::StoredAudioUnverifiable {
@@ -1982,6 +2004,7 @@ mod tests {
             &client_for(&[NOMAD_ORIGINAL]),
             planned,
             &OutputState::empty(dir),
+            &HashSet::new(),
             &context,
             &NoopReporter::shared(),
         )
@@ -2492,6 +2515,63 @@ mod tests {
 
         assert_eq!(result.adopted, 1);
         assert_eq!(result.failed, 1);
+    }
+
+    /// A planned re-issue of NOMAD_ORIGINAL whose one candidate records
+    /// the hash of "fake audio" while the file on disk holds other bytes
+    fn reissue_with_changed_candidate(dir: &Path) -> (PlannedDownload, String) {
+        store_episode(dir, NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        std::fs::write(dir.join(format!("{}.mp3", NOMAD_STEM)), b"changed").unwrap();
+        let state = scan_output_dir(dir, &NoopReporter::shared()).unwrap();
+        let candidate = state
+            .stored_episodes_with_guid("nomad-original")
+            .next()
+            .unwrap()
+            .clone();
+        let hash = candidate.content_hash.clone().unwrap();
+        let mut planned = planned_nomad(false);
+        planned.replaced_candidates = vec![candidate];
+        (planned, hash)
+    }
+
+    #[tokio::test]
+    async fn identical_audio_is_confirmed_by_hashing_the_stored_file() {
+        let dir = tempdir().unwrap();
+        let (planned, hash) = reissue_with_changed_candidate(dir.path());
+
+        let found =
+            replaced_with_identical_audio(dir.path(), &planned, &hash, &HashSet::new()).await;
+
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn identical_audio_verified_in_this_run_is_not_hashed_again() {
+        let dir = tempdir().unwrap();
+        let (planned, hash) = reissue_with_changed_candidate(dir.path());
+        let intact = HashSet::from([format!("{}.mp3", NOMAD_STEM)]);
+
+        // Hashing the file would find the changed bytes; the verification of
+        // this run vouches for it instead.
+        let found = replaced_with_identical_audio(dir.path(), &planned, &hash, &intact).await;
+
+        assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn sync_records_which_checked_audio_is_intact() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+        let state = scan_output_dir(dir.path(), &NoopReporter::shared()).unwrap();
+        let targets = archive_check_targets(&state, &create_sync_plan(Vec::new(), &state, None));
+
+        let verification =
+            verify_stored_audio(&targets, dir.path(), false, &NoopReporter::shared()).await;
+
+        assert_eq!(
+            verification.intact,
+            HashSet::from([format!("{}.mp3", NOMAD_STEM)])
+        );
     }
 
     #[tokio::test]
