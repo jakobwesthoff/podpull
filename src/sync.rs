@@ -334,8 +334,9 @@ async fn download_planned<C: HttpClient>(
     reporter: &SharedProgressReporter,
 ) -> Result<(), String> {
     let episode = &planned.episode;
-    let audio_path = output_dir.join(&planned.audio_filename);
-    let metadata_path = output_dir.join(&planned.metadata_filename);
+    let audio_filename = planned.audio_filename();
+    let audio_path = output_dir.join(&audio_filename);
+    let metadata_path = output_dir.join(planned.metadata_filename());
 
     let staged_audio = stage_download(client, episode, &audio_path, context, reporter)
         .await
@@ -343,7 +344,7 @@ async fn download_planned<C: HttpClient>(
 
     let staged_metadata = match stage_episode_metadata(
         episode,
-        &planned.audio_filename,
+        &audio_filename,
         Some(staged_audio.content_hash().to_string()),
         &metadata_path,
     ) {
@@ -374,7 +375,7 @@ async fn download_planned<C: HttpClient>(
         {
             error.push_str(&format!(
                 "; the audio file {} could not be removed: {}",
-                planned.audio_filename, remove_error
+                audio_filename, remove_error
             ));
         }
         return Err(error);
@@ -451,8 +452,14 @@ async fn verify_collided_audio(
         match owner {
             Some(episode) => repairs.push(PlannedDownload {
                 episode: episode.clone(),
-                audio_filename: stored.audio_filename.clone(),
-                metadata_filename: stored.metadata_filename.clone(),
+                stem: stored
+                    .metadata_filename
+                    .trim_end_matches(".json")
+                    .to_string(),
+                audio_extension: Path::new(&stored.audio_filename)
+                    .extension()
+                    .map(|ext| ext.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 collides_with: None,
                 replaces_existing: true,
             }),
@@ -1404,8 +1411,8 @@ mod tests {
         .unwrap();
         PlannedDownload {
             episode: feed.episodes[0].clone(),
-            audio_filename: format!("{}.mp3", NOMAD_STEM),
-            metadata_filename: format!("{}.json", NOMAD_STEM),
+            stem: NOMAD_STEM.to_string(),
+            audio_extension: "mp3".to_string(),
             collides_with: None,
             replaces_existing,
         }

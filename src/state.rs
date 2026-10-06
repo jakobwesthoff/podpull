@@ -117,19 +117,33 @@ pub struct StoredEpisode {
 }
 
 /// An episode scheduled for download, with the files it is written to
+///
+/// Audio and metadata share one stem, so a plan cannot pair the audio of
+/// one name with the metadata of another.
 #[derive(Debug, Clone)]
 pub struct PlannedDownload {
     pub episode: Episode,
-    /// Name of the audio file inside the output directory
-    pub audio_filename: String,
-    /// Name of the episode metadata file inside the output directory
-    pub metadata_filename: String,
+    /// Name of both files inside the output directory, without extension
+    pub stem: String,
+    pub audio_extension: String,
     /// Key in [`OutputState::stored_episodes`] of the episode that already
     /// occupies this episode's base filename, if any
     pub collides_with: Option<String>,
     /// Whether the download replaces audio of an episode already stored
     /// under these names, as a repair does
     pub replaces_existing: bool,
+}
+
+impl PlannedDownload {
+    /// Name of the audio file inside the output directory
+    pub fn audio_filename(&self) -> String {
+        format!("{}.{}", self.stem, self.audio_extension)
+    }
+
+    /// Name of the episode metadata file inside the output directory
+    pub fn metadata_filename(&self) -> String {
+        format!("{}.json", self.stem)
+    }
 }
 
 /// Plan for synchronization, indicating what needs to be downloaded
@@ -366,8 +380,8 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
             PlannedDownload {
                 collides_with,
                 replaces_existing: false,
-                audio_filename: format!("{}.{}", stem, get_audio_extension(&episode)),
-                metadata_filename: format!("{}.json", stem),
+                audio_extension: get_audio_extension(&episode),
+                stem,
                 episode,
             }
         })
@@ -748,11 +762,13 @@ mod tests {
         let plan = create_sync_plan(vec![episode], &state_with_guids(&[]));
 
         assert_eq!(
-            plan.to_download[0].audio_filename,
+            plan.to_download[0].audio_filename(),
             "2024-01-16-Audio Book.m4a"
         );
+        assert_eq!(plan.to_download[0].stem, "2024-01-16-Audio Book");
+        assert_eq!(plan.to_download[0].audio_extension, "m4a");
         assert_eq!(
-            plan.to_download[0].metadata_filename,
+            plan.to_download[0].metadata_filename(),
             "2024-01-16-Audio Book.json"
         );
     }
@@ -775,12 +791,11 @@ mod tests {
         let names: Vec<_> = plan
             .to_download
             .iter()
-            .map(|planned| {
-                (
-                    planned.audio_filename.as_str(),
-                    planned.metadata_filename.as_str(),
-                )
-            })
+            .map(|planned| (planned.audio_filename(), planned.metadata_filename()))
+            .collect();
+        let names: Vec<_> = names
+            .iter()
+            .map(|(audio, metadata)| (audio.as_str(), metadata.as_str()))
             .collect();
         assert_eq!(
             names,
@@ -809,7 +824,7 @@ mod tests {
         let plan = create_sync_plan(vec![episode], &state);
 
         assert_eq!(
-            plan.to_download[0].audio_filename,
+            plan.to_download[0].audio_filename(),
             "2024-12-19-102522-Sega Nomad.mp3"
         );
     }
