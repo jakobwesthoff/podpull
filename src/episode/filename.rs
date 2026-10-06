@@ -15,17 +15,26 @@ const MAX_TITLE_LENGTH: usize = 100;
 /// Number of hex digits of the GUID hash in a last-resort filename suffix
 const HASH_SUFFIX_LENGTH: usize = 8;
 
+/// Date format of the base stem's prefix
+const DATE_FORMAT: &str = "%Y-%m-%d";
+
+/// Date format of the prefix that tells apart episodes sharing a day
+const TIMESTAMP_FORMAT: &str = "%Y-%m-%d-%H%M%S";
+
 /// Generate a filename stem (without extension) for an episode
 ///
 /// Format: "YYYY-MM-DD-sanitized-title" or "undated-sanitized-title"
 pub fn generate_filename_stem(episode: &Episode) -> String {
+    dated_stem(episode, DATE_FORMAT, &sanitize_title(&episode.title))
+}
+
+/// Prefix an already sanitized title with the publication date in
+/// `date_format`, or with "undated"
+fn dated_stem(episode: &Episode, date_format: &str, sanitized_title: &str) -> String {
     let date_prefix = episode
         .pub_date
-        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .map(|dt| dt.format(date_format).to_string())
         .unwrap_or_else(|| "undated".to_string());
-
-    let sanitized_title = sanitize_title(&episode.title);
-
     format!("{}-{}", date_prefix, sanitized_title)
 }
 
@@ -60,6 +69,10 @@ pub fn get_audio_extension(episode: &Episode) -> String {
 ///
 /// This is the base name only. Episodes sharing title and publication day
 /// get the same base name; [`generate_unique_filename_stem`] resolves that.
+#[deprecated(
+    since = "1.2.0",
+    note = "episodes sharing title and date collide; use the names in `SyncPlan::to_download`"
+)]
 pub fn generate_filename(episode: &Episode) -> String {
     let stem = generate_filename_stem(episode);
     let ext = get_audio_extension(episode);
@@ -95,17 +108,14 @@ pub fn filename_claim_key(stem: &str) -> String {
 pub fn generate_unique_filename_stem(episode: &Episode, claimed_keys: &HashSet<String>) -> String {
     let is_free = |stem: &str| !claimed_keys.contains(&filename_claim_key(stem));
 
-    let base = generate_filename_stem(episode);
+    let title = sanitize_title(&episode.title);
+    let base = dated_stem(episode, DATE_FORMAT, &title);
     if is_free(&base) {
         return base;
     }
 
-    if let Some(pub_date) = episode.pub_date {
-        let timed = format!(
-            "{}-{}",
-            pub_date.format("%Y-%m-%d-%H%M%S"),
-            sanitize_title(&episode.title)
-        );
+    if episode.pub_date.is_some() {
+        let timed = dated_stem(episode, TIMESTAMP_FORMAT, &title);
         if is_free(&timed) {
             return timed;
         }
@@ -567,6 +577,7 @@ mod tests {
     // === Full filename tests ===
 
     #[test]
+    #[allow(deprecated)]
     fn generate_filename_combines_stem_and_extension() {
         let episode = make_episode(
             "My Episode",
@@ -578,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn generate_filename_with_m4a() {
         let episode = make_episode(
             "Audio Book",

@@ -8,7 +8,8 @@ mod filename;
 pub use download::{
     DownloadContext, DownloadResult, StagedDownload, download_episode, hash_file, stage_download,
 };
+#[allow(deprecated)]
+pub use filename::generate_filename;
 pub use filename::{
-    filename_claim_key, generate_filename, generate_filename_stem, generate_unique_filename_stem,
-    get_audio_extension,
+    filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };
