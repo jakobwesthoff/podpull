@@ -18,14 +18,14 @@ The binary is a crate of its own and uses the library through its exports, like 
 
 ## Decision
 
-The library is internal to podpull. Only podpull's own frontends use it: the CLI, and possibly further frontends of our own. It gives no API stability to anyone else.
+The library is internal to podpull. Only podpull's own frontends use it: the CLI, and possibly further frontends of our own. It gives no API stability to anyone else. The library/binary split stays; it structures the code.
 
-- The library's modules are private. The crate root exports what the frontends use, plus the types that appear in the signatures of those items. An item is exported once a frontend needs it.
+- The library's modules are private. The crate root exports what the frontends use, plus the types that appear in the signatures of those items. An item is exported once a frontend needs it. The `unnameable_types` lint reports a type that a frontend can reach but the crate root does not export.
 - Library types are not `#[non_exhaustive]`.
 - Version numbers follow the behaviour of the CLI. A change to the library alone is not a breaking change.
 - The changelog lists changes CLI users notice. Library changes are recorded in commits and ADRs.
 
 ## Consequences
 
-- rustc reports library code that no frontend reaches as dead code.
+- rustc reports library code that no exported item reaches as dead code. Members of exported types (methods, fields, variants, trait impls) are not covered and need review.
 - The CLI matches progress events and damage types exhaustively, so a new variant fails to compile until the CLI handles it.
