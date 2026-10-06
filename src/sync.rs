@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use url::Url;
 
-use crate::episode::{DownloadContext, download_episode, hash_file};
+use crate::episode::{DownloadContext, hash_file, stage_download};
 use crate::error::{FeedError, SyncError};
 use crate::feed::{
     Episode, Podcast, fetch_feed_bytes, file_path_to_url, is_url, parse_feed, read_feed_file,
 };
 use crate::http::HttpClient;
-use crate::metadata::{write_episode_metadata, write_podcast_metadata};
+use crate::metadata::{stage_episode_metadata, write_podcast_metadata};
 use crate::progress::{ProgressEvent, SharedProgressReporter};
 use crate::state::{OutputState, PlannedDownload, create_sync_plan, scan_output_dir};
 
@@ -275,27 +275,15 @@ async fn download_all<C: HttpClient + Clone + 'static>(
                 episode_index,
                 total_to_download,
             };
-            let episode = planned.episode;
-            let audio_path = output_dir.join(&planned.audio_filename);
-            let metadata_path = output_dir.join(&planned.metadata_filename);
-
-            let error =
-                match download_episode(&client, &episode, &audio_path, &context, &reporter).await {
-                    Ok(download_result) => match write_episode_metadata(
-                        &episode,
-                        &planned.audio_filename,
-                        Some(download_result.content_hash),
-                        &metadata_path,
-                    ) {
-                        Ok(()) => return DownloadOutcome::Downloaded,
-                        Err(e) => format!("Failed to write metadata: {}", e),
-                    },
-                    Err(e) => e.to_string(),
-                };
+            let Err(error) =
+                download_planned(&client, &planned, &output_dir, &context, &reporter).await
+            else {
+                return DownloadOutcome::Downloaded;
+            };
 
             reporter.report(ProgressEvent::DownloadFailed {
                 download_id,
-                episode_title: episode.title.clone(),
+                episode_title: planned.episode.title.clone(),
                 error: error.clone(),
             });
             if !continue_on_error {
@@ -322,6 +310,75 @@ async fn download_all<C: HttpClient + Clone + 'static>(
         }
     }
     totals
+}
+
+/// Download one planned episode and put its audio and metadata in place
+///
+/// The metadata is written before the audio takes its final name. An
+/// interruption before that point leaves only partial files, which the next
+/// directory scan removes; after it, only the two renames remain. Audio left
+/// without metadata would claim its name and make the next sync store the
+/// episode a second time under another one.
+async fn download_planned<C: HttpClient>(
+    client: &C,
+    planned: &PlannedDownload,
+    output_dir: &Path,
+    context: &DownloadContext,
+    reporter: &SharedProgressReporter,
+) -> Result<(), String> {
+    let episode = &planned.episode;
+    let audio_path = output_dir.join(&planned.audio_filename);
+    let metadata_path = output_dir.join(&planned.metadata_filename);
+
+    let staged_audio = stage_download(client, episode, &audio_path, context, reporter)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let staged_metadata = match stage_episode_metadata(
+        episode,
+        &planned.audio_filename,
+        Some(staged_audio.content_hash().to_string()),
+        &metadata_path,
+    ) {
+        Ok(staged_metadata) => staged_metadata,
+        Err(e) => {
+            staged_audio.discard().await;
+            return Err(format!("Failed to write metadata: {}", e));
+        }
+    };
+
+    reporter.report(ProgressEvent::Finalizing {
+        download_id: context.download_id,
+        episode_title: episode.title.clone(),
+    });
+
+    if let Err(e) = staged_audio.finalize().await {
+        staged_metadata.discard();
+        return Err(e.to_string());
+    }
+
+    if let Err(e) = staged_metadata.commit() {
+        let mut error = format!("Failed to write metadata: {}", e);
+        // A fresh download owns its name, so its audio goes again. A repair
+        // replaced audio that the existing metadata still names; removing it
+        // would leave that metadata without audio.
+        if !planned.replaces_existing
+            && let Err(remove_error) = tokio::fs::remove_file(&audio_path).await
+        {
+            error.push_str(&format!(
+                "; the audio file {} could not be removed: {}",
+                planned.audio_filename, remove_error
+            ));
+        }
+        return Err(error);
+    }
+
+    reporter.report(ProgressEvent::DownloadCompleted {
+        download_id: context.download_id,
+        episode_title: episode.title.clone(),
+        bytes_downloaded: staged_audio.bytes_downloaded(),
+    });
+    Ok(())
 }
 
 /// Outcome of checking the audio files that planned downloads collide with
@@ -388,6 +445,7 @@ async fn verify_collided_audio(
                 audio_filename: stored.audio_filename.clone(),
                 metadata_filename: stored.metadata_filename.clone(),
                 collides_with: None,
+                replaces_existing: true,
             }),
             None => failures.push((
                 stored.title.clone(),
@@ -406,6 +464,7 @@ async fn verify_collided_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::write_episode_metadata;
     use std::sync::Arc;
 
     use crate::http::{ByteStream, HttpResponse};
@@ -1063,7 +1122,14 @@ mod tests {
         assert_eq!(result.downloaded, 0);
         assert_eq!(result.failed, 1);
         assert_eq!(result.failed_episodes[0].0, "SFT Bits: Sega Nomad");
-        assert!(dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
+        // Audio without metadata would claim its name and make the next sync
+        // store the episode a second time under another one.
+        assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
+        assert!(
+            !dir.path()
+                .join(format!("{}.mp3.partial", NOMAD_STEM))
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -1299,5 +1365,117 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    // =========================================================
+    // Finalizing a single download
+    // =========================================================
+
+    fn planned_nomad(replaces_existing: bool) -> PlannedDownload {
+        let feed = crate::feed::parse_feed(
+            feed_xml(&[NOMAD_ORIGINAL]).as_bytes(),
+            url::Url::parse("https://example.com/feed.xml").unwrap(),
+        )
+        .unwrap();
+        PlannedDownload {
+            episode: feed.episodes[0].clone(),
+            audio_filename: format!("{}.mp3", NOMAD_STEM),
+            metadata_filename: format!("{}.json", NOMAD_STEM),
+            collides_with: None,
+            replaces_existing,
+        }
+    }
+
+    async fn download_one(dir: &Path, planned: &PlannedDownload) -> Result<(), String> {
+        let context = DownloadContext {
+            download_id: 0,
+            episode_index: 0,
+            total_to_download: 1,
+        };
+        download_planned(
+            &client_for(&[NOMAD_ORIGINAL]),
+            planned,
+            dir,
+            &context,
+            &NoopReporter::shared(),
+        )
+        .await
+    }
+
+    /// Make renaming onto the metadata path fail: a non-empty directory
+    /// cannot be replaced by a file.
+    fn block_metadata_path(dir: &Path) {
+        let metadata_path = dir.join(format!("{}.json", NOMAD_STEM));
+        std::fs::create_dir(&metadata_path).unwrap();
+        std::fs::write(metadata_path.join("occupant"), b"").unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_planned_writes_audio_and_metadata() {
+        let dir = tempdir().unwrap();
+
+        download_one(dir.path(), &planned_nomad(false))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            recorded_episodes(dir.path())["nomad-original"],
+            format!("{}.mp3", NOMAD_STEM)
+        );
+    }
+
+    #[tokio::test]
+    async fn download_planned_removes_fresh_audio_when_metadata_cannot_be_placed() {
+        let dir = tempdir().unwrap();
+        block_metadata_path(dir.path());
+
+        let error = download_one(dir.path(), &planned_nomad(false))
+            .await
+            .unwrap_err();
+
+        assert!(error.starts_with("Failed to write metadata"));
+        assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
+        assert!(
+            !dir.path()
+                .join(format!("{}.json.partial", NOMAD_STEM))
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn download_planned_keeps_repaired_audio_when_metadata_cannot_be_placed() {
+        let dir = tempdir().unwrap();
+        block_metadata_path(dir.path());
+
+        // A repair replaced audio that the existing metadata still names, so
+        // removing it would leave that metadata without its audio.
+        let error = download_one(dir.path(), &planned_nomad(true))
+            .await
+            .unwrap_err();
+
+        assert!(error.starts_with("Failed to write metadata"));
+        assert_eq!(
+            std::fs::read(dir.path().join(format!("{}.mp3", NOMAD_STEM))).unwrap(),
+            b"fake audio"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_planned_discards_metadata_when_audio_cannot_be_placed() {
+        let dir = tempdir().unwrap();
+        let audio_path = dir.path().join(format!("{}.mp3", NOMAD_STEM));
+        std::fs::create_dir(&audio_path).unwrap();
+        std::fs::write(audio_path.join("occupant"), b"").unwrap();
+
+        download_one(dir.path(), &planned_nomad(false))
+            .await
+            .unwrap_err();
+
+        assert!(!dir.path().join(format!("{}.json", NOMAD_STEM)).exists());
+        assert!(
+            !dir.path()
+                .join(format!("{}.json.partial", NOMAD_STEM))
+                .exists()
+        );
     }
 }

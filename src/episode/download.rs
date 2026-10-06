@@ -44,18 +44,61 @@ pub fn hash_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-/// Download an episode to the specified output path
+/// An episode whose audio is complete in its partial file but not yet
+/// under its final name
 ///
-/// Streams the response body to disk while computing a SHA-256 hash.
-/// Downloads to a `.partial` file first, then atomically renames on completion.
-/// Returns a `DownloadResult` containing bytes downloaded and content hash.
-pub async fn download_episode<C: HttpClient>(
+/// Staging lets a caller put the episode's metadata in place before the
+/// audio becomes visible, so an interruption never leaves audio without
+/// metadata behind.
+#[derive(Debug)]
+pub struct StagedDownload {
+    partial_path: PathBuf,
+    final_path: PathBuf,
+    bytes_downloaded: u64,
+    content_hash: String,
+}
+
+impl StagedDownload {
+    pub fn bytes_downloaded(&self) -> u64 {
+        self.bytes_downloaded
+    }
+
+    /// SHA-256 hash of the downloaded content (format: "sha256:...")
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// Move the audio from its partial file to its final name
+    pub async fn finalize(&self) -> Result<(), DownloadError> {
+        tokio::fs::rename(&self.partial_path, &self.final_path)
+            .await
+            .map_err(|e| DownloadError::RenameFailed {
+                partial_path: self.partial_path.clone(),
+                final_path: self.final_path.clone(),
+                source: e,
+            })
+    }
+
+    /// Abandon the download and remove its partial file
+    ///
+    /// A partial file that cannot be removed here is removed by the next
+    /// directory scan.
+    pub async fn discard(self) {
+        let _ = tokio::fs::remove_file(&self.partial_path).await;
+    }
+}
+
+/// Download an episode into the partial file next to `output_path`
+///
+/// Streams the response body to disk while computing a SHA-256 hash. The
+/// audio reaches `output_path` only through [`StagedDownload::finalize`].
+pub async fn stage_download<C: HttpClient>(
     client: &C,
     episode: &Episode,
     output_path: &Path,
     context: &DownloadContext,
     reporter: &SharedProgressReporter,
-) -> Result<DownloadResult, DownloadError> {
+) -> Result<StagedDownload, DownloadError> {
     let url = episode.enclosure.url.as_str();
 
     // Get streaming response
@@ -84,7 +127,6 @@ pub async fn download_episode<C: HttpClient>(
         content_length: response.content_length,
     });
 
-    // Create partial file path
     let partial_path = PathBuf::from(format!("{}.partial", output_path.display()));
 
     // Within a sync, the directory scan removes leftover partial files before
@@ -151,31 +193,43 @@ pub async fn download_episode<C: HttpClient>(
         hash: content_hash.clone(),
     });
 
-    // Report finalizing (atomic rename)
+    Ok(StagedDownload {
+        partial_path,
+        final_path: output_path.to_path_buf(),
+        bytes_downloaded,
+        content_hash,
+    })
+}
+
+/// Download an episode to the specified output path
+///
+/// Stages the download (see [`stage_download`]) and moves it to its final
+/// name right away. Returns a `DownloadResult` containing bytes downloaded
+/// and content hash.
+pub async fn download_episode<C: HttpClient>(
+    client: &C,
+    episode: &Episode,
+    output_path: &Path,
+    context: &DownloadContext,
+    reporter: &SharedProgressReporter,
+) -> Result<DownloadResult, DownloadError> {
+    let staged = stage_download(client, episode, output_path, context, reporter).await?;
+
     reporter.report(ProgressEvent::Finalizing {
         download_id: context.download_id,
         episode_title: episode.title.clone(),
     });
+    staged.finalize().await?;
 
-    // Atomically rename partial file to final path
-    tokio::fs::rename(&partial_path, output_path)
-        .await
-        .map_err(|e| DownloadError::RenameFailed {
-            partial_path: partial_path.clone(),
-            final_path: output_path.to_path_buf(),
-            source: e,
-        })?;
-
-    // Report completion
     reporter.report(ProgressEvent::DownloadCompleted {
         download_id: context.download_id,
         episode_title: episode.title.clone(),
-        bytes_downloaded,
+        bytes_downloaded: staged.bytes_downloaded,
     });
 
     Ok(DownloadResult {
-        bytes_downloaded,
-        content_hash,
+        bytes_downloaded: staged.bytes_downloaded,
+        content_hash: staged.content_hash,
     })
 }
 
@@ -370,5 +424,65 @@ mod tests {
         let result = hash_file(&dir.path().join("missing.mp3"));
 
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    fn context() -> DownloadContext {
+        DownloadContext {
+            download_id: 0,
+            episode_index: 0,
+            total_to_download: 1,
+        }
+    }
+
+    fn ok_client() -> MockHttpClient {
+        MockHttpClient {
+            response_data: b"test audio content".to_vec(),
+            status: 200,
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_download_stays_partial_until_finalized() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+
+        let staged = stage_download(
+            &ok_client(),
+            &make_episode(),
+            &output_path,
+            &context(),
+            &NoopReporter::shared(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!output_path.exists());
+        assert!(dir.path().join("episode.mp3.partial").exists());
+        assert_eq!(staged.bytes_downloaded(), 18);
+
+        staged.finalize().await.unwrap();
+
+        assert_eq!(std::fs::read(&output_path).unwrap(), b"test audio content");
+        assert!(!dir.path().join("episode.mp3.partial").exists());
+    }
+
+    #[tokio::test]
+    async fn discarded_download_leaves_nothing_behind() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+
+        let staged = stage_download(
+            &ok_client(),
+            &make_episode(),
+            &output_path,
+            &context(),
+            &NoopReporter::shared(),
+        )
+        .await
+        .unwrap();
+        staged.discard().await;
+
+        assert!(!output_path.exists());
+        assert!(!dir.path().join("episode.mp3.partial").exists());
     }
 }

@@ -56,29 +56,74 @@ impl EpisodeMetadata {
     }
 }
 
-/// Write episode metadata to a JSON file
+/// Episode metadata written to its partial file but not yet under its
+/// final name
+///
+/// A metadata file cut short by an interruption would leave its episode
+/// without a readable GUID while still occupying the name. Writing to a
+/// partial file, which the next directory scan removes, and renaming it into
+/// place means the metadata file is either complete or untouched. Staging
+/// also lets a sync write the metadata before the audio takes its name.
+#[derive(Debug)]
+pub struct StagedMetadata {
+    partial_path: PathBuf,
+    path: PathBuf,
+}
+
+impl StagedMetadata {
+    /// Move the metadata from its partial file to its final name
+    ///
+    /// On failure the partial file is removed as well, as nothing can
+    /// complete it any more.
+    pub fn commit(self) -> Result<(), MetadataError> {
+        std::fs::rename(&self.partial_path, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&self.partial_path);
+            MetadataError::WriteFailed {
+                path: self.path.clone(),
+                source: e,
+            }
+        })
+    }
+
+    /// Abandon the metadata and remove its partial file
+    ///
+    /// A partial file that cannot be removed here is removed by the next
+    /// directory scan.
+    pub fn discard(self) {
+        let _ = std::fs::remove_file(&self.partial_path);
+    }
+}
+
+/// Write episode metadata into the partial file next to `path`
+pub fn stage_episode_metadata(
+    episode: &Episode,
+    audio_filename: &str,
+    content_hash: Option<String>,
+    path: &Path,
+) -> Result<StagedMetadata, MetadataError> {
+    let metadata = EpisodeMetadata::from_episode(episode, audio_filename, content_hash);
+    let json = serde_json::to_string_pretty(&metadata)?;
+
+    let partial_path = PathBuf::from(format!("{}.partial", path.display()));
+    std::fs::write(&partial_path, json).map_err(|e| MetadataError::WriteFailed {
+        path: partial_path.clone(),
+        source: e,
+    })?;
+
+    Ok(StagedMetadata {
+        partial_path,
+        path: path.to_path_buf(),
+    })
+}
+
+/// Write episode metadata to a JSON file, replacing an existing one atomically
 pub fn write_episode_metadata(
     episode: &Episode,
     audio_filename: &str,
     content_hash: Option<String>,
     path: &Path,
 ) -> Result<(), MetadataError> {
-    let metadata = EpisodeMetadata::from_episode(episode, audio_filename, content_hash);
-    let json = serde_json::to_string_pretty(&metadata)?;
-
-    // A metadata file cut short by an interruption would leave its episode
-    // without a readable GUID while still occupying the name. Writing to a
-    // partial file first, which the next directory scan removes, and renaming
-    // it into place means the metadata file is either complete or untouched.
-    let partial_path = PathBuf::from(format!("{}.partial", path.display()));
-    std::fs::write(&partial_path, json).map_err(|e| MetadataError::WriteFailed {
-        path: partial_path.clone(),
-        source: e,
-    })?;
-    std::fs::rename(&partial_path, path).map_err(|e| MetadataError::WriteFailed {
-        path: path.to_path_buf(),
-        source: e,
-    })
+    stage_episode_metadata(episode, audio_filename, content_hash, path)?.commit()
 }
 
 /// Read episode metadata from a JSON file
@@ -206,6 +251,36 @@ mod tests {
             Err(MetadataError::WriteFailed { path: failed, .. }) => assert_eq!(failed, path),
             other => panic!("Expected WriteFailed, got {other:?}"),
         }
+        assert!(!dir.path().join("episode.json.partial").exists());
+    }
+
+    #[test]
+    fn staged_metadata_stays_partial_until_committed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+
+        let staged = stage_episode_metadata(&make_episode(), "test.mp3", None, &path).unwrap();
+
+        assert!(!path.exists());
+        assert!(dir.path().join("episode.json.partial").exists());
+
+        staged.commit().unwrap();
+
+        assert_eq!(read_episode_metadata(&path).unwrap().title, "Test Episode");
+        assert!(!dir.path().join("episode.json.partial").exists());
+    }
+
+    #[test]
+    fn discarded_metadata_leaves_nothing_behind() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episode.json");
+
+        stage_episode_metadata(&make_episode(), "test.mp3", None, &path)
+            .unwrap()
+            .discard();
+
+        assert!(!path.exists());
+        assert!(!dir.path().join("episode.json.partial").exists());
     }
 
     #[test]

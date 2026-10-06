@@ -57,6 +57,9 @@ pub struct PlannedDownload {
     /// Key in [`OutputState::stored_episodes`] of the episode that already
     /// occupies this episode's base filename, if any
     pub collides_with: Option<String>,
+    /// Whether the download replaces audio of an episode already stored
+    /// under these names, as a repair does
+    pub replaces_existing: bool,
 }
 
 /// Plan for synchronization, indicating what needs to be downloaded
@@ -281,6 +284,7 @@ pub fn create_sync_plan(episodes: Vec<Episode>, state: &OutputState) -> SyncPlan
             claimed_stems.insert(filename_claim_key(&stem));
             PlannedDownload {
                 collides_with,
+                replaces_existing: false,
                 audio_filename: format!("{}.{}", stem, get_audio_extension(&episode)),
                 metadata_filename: format!("{}.json", stem),
                 episode,
