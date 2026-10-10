@@ -9,9 +9,10 @@ repository = "https://github.com/jakobwesthoff/podpull"
 homepage = "https://podpull.westhoffswelt.de"
 keywords = ["podcast", "rss", "download", "sync", "backup"]
 categories = ["command-line-utilities", "multimedia"]
-# Repository tooling, the project website and its demo recording are of no
-# use in the published crate. CLAUDE.md is a local, untracked file.
-exclude = [".adr-dir", ".github/", "CLAUDE.md", "docs/pages/", "docs/vhs/", "todos/"]
+# Repository tooling, the docs (ADRs, the project website and its demo
+# recording) and todos are of no use in the published crate. CLAUDE.md is
+# a local, untracked file.
+exclude = [".adr-dir", ".github/", "CLAUDE.md", "docs/", "todos/"]
 
 [dependencies]
 anyhow = "1.0.104"
