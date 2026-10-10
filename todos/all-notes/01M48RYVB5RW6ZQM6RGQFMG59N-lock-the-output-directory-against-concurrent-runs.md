@@ -1,3 +1,11 @@
+---
+title: "Lock the output directory against concurrent runs"
+kind: bug
+component: sync
+status: needs-discussion
+impact: high
+tags: [concurrency]
+---
 # Lock the output directory against concurrent runs
 
 Two podpull runs on the same output directory at once, for example
