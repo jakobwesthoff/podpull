@@ -1,6 +1,8 @@
 name: podpull
 tagline: Download and sync podcasts from RSS feeds
 github: jakobwesthoff/podpull
+url: https://podpull.westhoffswelt.de
+og_image: assets/og.png
 
 author:
   name: Jakob Westhoff
