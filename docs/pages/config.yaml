@@ -3,6 +3,7 @@ tagline: Download and sync podcasts from RSS feeds
 github: jakobwesthoff/podpull
 url: https://podpull.westhoffswelt.de
 og_image: assets/og.png
+og_image_alt: "podpull: Podcasts in a folder. No cloud, no account. A terminal shows podpull downloading three podcast episodes with progress bars."
 
 author:
   name: Jakob Westhoff
