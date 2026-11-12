@@ -17,6 +17,7 @@ use crate::feed::{
 use crate::http::HttpClient;
 use crate::metadata::write_podcast_metadata;
 use crate::progress::{ProgressEvent, ProgressReporter};
+use crate::reason::FailureReason;
 use crate::state::{UnreadableMetadata, archive_check_targets, create_sync_plan, scan_output_dir};
 use downloads::download_all;
 use verify::verify_stored_audio;
@@ -91,7 +92,7 @@ pub struct SyncResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedEpisode {
     pub title: String,
-    pub error: String,
+    pub reason: FailureReason,
 }
 
 /// Stored audio that could not be read to check it against its recorded
@@ -99,7 +100,7 @@ pub struct FailedEpisode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnverifiableAudio {
     pub audio_filename: String,
-    pub error: String,
+    pub reason: String,
 }
 
 /// Synchronize a podcast feed to a local directory
@@ -140,7 +141,7 @@ pub async fn sync_podcast<C: HttpClient>(
     for unreadable in state.unreadable_metadata() {
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: unreadable.path.clone(),
-            error: unreadable.error.clone(),
+            reason: unreadable.reason.clone(),
         });
     }
 
@@ -1080,7 +1081,12 @@ mod tests {
         let (result, events) = sync_recording(dir.path(), &[NOMAD_ORIGINAL]).await;
 
         assert_eq!(result.failed_episodes.len(), 1);
-        assert!(result.failed_episodes[0].error.contains("already exists"));
+        assert!(
+            result.failed_episodes[0]
+                .reason
+                .root
+                .contains("already exists")
+        );
         assert_eq!(result.stuck_partial_files, vec![stuck.clone()]);
         assert!(events.iter().any(|event| matches!(
             event,
@@ -1582,7 +1588,10 @@ mod tests {
         .await;
 
         assert_eq!(totals.failed_episodes.len(), 1);
-        assert_eq!(totals.failed_episodes[0].error, "Download panicked: boom");
+        assert_eq!(
+            totals.failed_episodes[0].reason.root,
+            "Download panicked: boom"
+        );
     }
 
     #[test]

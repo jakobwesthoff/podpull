@@ -18,6 +18,7 @@ mod http;
 mod metadata;
 mod partial_file;
 mod progress;
+mod reason;
 mod state;
 mod sync;
 
@@ -25,6 +26,7 @@ pub use damage::{DamageKind, DamageRemedy, DamagedAudio};
 pub use error::{FeedError, MetadataError, StateError, SyncError};
 pub use http::{ByteStream, HttpClient, HttpResponse, ReqwestClient};
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter};
+pub use reason::{FailureReason, Subject};
 pub use state::UnreadableMetadata;
 pub use sync::{
     AudioCheck, FailedEpisode, SyncOptions, SyncResult, UnverifiableAudio, sync_podcast,

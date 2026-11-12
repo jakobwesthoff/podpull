@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::damage::{DamageKind, DamageRemedy};
+use crate::reason::FailureReason;
 
 /// Events emitted during podcast synchronization for progress reporting
 #[derive(Debug, Clone)]
@@ -114,7 +115,7 @@ pub enum ProgressEvent {
         /// Identifies the download slot
         download_id: usize,
         episode_title: String,
-        error: String,
+        reason: FailureReason,
     },
 
     /// Partial files were cleaned up during directory scan
@@ -135,7 +136,7 @@ pub enum ProgressEvent {
 
     /// An episode metadata file in the output directory holds no valid
     /// metadata
-    MetadataUnreadable { path: PathBuf, error: String },
+    MetadataUnreadable { path: PathBuf, reason: String },
 
     /// An existing audio file is about to be hashed to check it against the
     /// hash recorded when it was downloaded
@@ -153,7 +154,7 @@ pub enum ProgressEvent {
     /// An existing audio file could not be read to check it
     StoredAudioUnverifiable {
         audio_filename: String,
-        error: String,
+        reason: String,
     },
 
     /// An existing audio file no longer matches the hash recorded when it
@@ -263,7 +264,7 @@ mod tests {
         reporter.report(ProgressEvent::DownloadFailed {
             download_id: 1,
             episode_title: "Episode 2".to_string(),
-            error: "Connection timeout".to_string(),
+            reason: FailureReason::without_subject("Connection timeout"),
         });
 
         reporter.report(ProgressEvent::PartialFilesCleanedUp { count: 2 });
@@ -274,7 +275,7 @@ mod tests {
 
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
-            error: "EOF while parsing".to_string(),
+            reason: "EOF while parsing".to_string(),
         });
 
         reporter.report(ProgressEvent::StoredAudioDamaged {
@@ -297,7 +298,7 @@ mod tests {
 
         reporter.report(ProgressEvent::StoredAudioUnverifiable {
             audio_filename: "2024-01-15-Episode 1.mp3".to_string(),
-            error: "Permission denied".to_string(),
+            reason: "Permission denied".to_string(),
         });
 
         reporter.report(ProgressEvent::SyncCompleted);

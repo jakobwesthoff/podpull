@@ -18,6 +18,7 @@ use crate::error::{DownloadError, MetadataError};
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
 use crate::progress::{ProgressEvent, ProgressReporter};
+use crate::reason::FailureReason;
 use crate::state::{OutputState, PlannedDownload, Purpose, StoredEpisode};
 
 /// Why the download of one episode failed
@@ -67,7 +68,7 @@ pub(super) enum DownloadOutcome {
     /// The audio was already stored, so only its GUID was recorded
     AlreadyStored,
     Failed {
-        error: String,
+        reason: FailureReason,
     },
 }
 
@@ -165,8 +166,8 @@ pub(super) async fn download_all<C: HttpClient>(
                         }
                         Ok(Err(error)) => error,
                         Err(panic) => EpisodeError::Panicked(panic_message(&*panic).to_string()),
-                    }
-                    .to_string();
+                    };
+                    let reason = FailureReason::without_subject(error.to_string());
                     // Every started download ends with an event a reporter
                     // can close its display for this slot on. The reporter
                     // may be what failed, so a second panic is contained.
@@ -174,10 +175,10 @@ pub(super) async fn download_all<C: HttpClient>(
                         reporter.report(ProgressEvent::DownloadFailed {
                             download_id: slot.download_id,
                             episode_title: title.clone(),
-                            error: error.clone(),
+                            reason: reason.clone(),
                         })
                     }));
-                    (title, DownloadOutcome::Failed { error })
+                    (title, DownloadOutcome::Failed { reason })
                 }
             })
             .buffer_unordered(max_concurrent)
@@ -195,8 +196,8 @@ pub(super) async fn download_all<C: HttpClient>(
             DownloadOutcome::Downloaded => totals.downloaded += 1,
             DownloadOutcome::Repaired => totals.repaired += 1,
             DownloadOutcome::AlreadyStored => totals.adopted += 1,
-            DownloadOutcome::Failed { error } => {
-                totals.failed_episodes.push(FailedEpisode { title, error })
+            DownloadOutcome::Failed { reason } => {
+                totals.failed_episodes.push(FailedEpisode { title, reason })
             }
         }
     }

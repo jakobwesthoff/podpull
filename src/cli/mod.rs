@@ -26,7 +26,7 @@ pub(crate) static BROOM: Emoji<'_, '_> = Emoji("🧹 ", "[c] ");
 pub(crate) static WARNING: Emoji<'_, '_> = Emoji("⚠️  ", "[!] ");
 
 #[cfg(test)]
-use podpull::{DamageKind, DamageRemedy, DamagedAudio, FailedEpisode, SyncResult};
+use podpull::{DamageKind, DamageRemedy, DamagedAudio, FailedEpisode, FailureReason, SyncResult};
 
 /// A sync result with the given counts, for the tests of the messages and
 /// of the exit code
@@ -37,7 +37,7 @@ pub(crate) fn test_result(downloaded: usize, failed: usize, damaged: usize) -> S
         failed_episodes: (0..failed)
             .map(|n| FailedEpisode {
                 title: format!("Episode {}", n),
-                error: "HTTP error 404".to_string(),
+                reason: FailureReason::without_subject("HTTP error 404"),
             })
             .collect(),
         damaged: (0..damaged)

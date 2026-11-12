@@ -187,7 +187,7 @@ mod tests {
         let mut unverifiable = result(0, 0, 0);
         unverifiable.unverifiable_audio = vec![UnverifiableAudio {
             audio_filename: "a.mp3".to_string(),
-            error: "denied".to_string(),
+            reason: "denied".to_string(),
         }];
 
         assert_eq!(exit_code(&stuck), 2);

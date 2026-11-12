@@ -175,7 +175,7 @@ pub(crate) fn write_problem_lists(
                 "  {}{} - {}",
                 CROSS,
                 failed.title.yellow(),
-                failed.error.dimmed()
+                failed.reason.root.dimmed()
             )?;
         }
     }
@@ -197,20 +197,18 @@ pub(crate) fn write_problem_lists(
         }
     }
 
-    let warnings: Vec<String> = result
-        .stuck_partial_files
-        .iter()
-        .map(|path| stuck_partial_file_message(path))
-        .chain(
-            result
-                .unreadable_metadata
-                .iter()
-                .map(|unreadable| unreadable_metadata_message(&unreadable.path, &unreadable.error)),
-        )
-        .chain(result.unverifiable_audio.iter().map(|unverifiable| {
-            unverifiable_audio_message(&unverifiable.audio_filename, &unverifiable.error)
-        }))
-        .collect();
+    let warnings: Vec<String> =
+        result
+            .stuck_partial_files
+            .iter()
+            .map(|path| stuck_partial_file_message(path))
+            .chain(result.unreadable_metadata.iter().map(|unreadable| {
+                unreadable_metadata_message(&unreadable.path, &unreadable.reason)
+            }))
+            .chain(result.unverifiable_audio.iter().map(|unverifiable| {
+                unverifiable_audio_message(&unverifiable.audio_filename, &unverifiable.reason)
+            }))
+            .collect();
     if !warnings.is_empty() {
         writeln!(out, "\n{}", "Warnings:".yellow().bold())?;
         for warning in warnings {
@@ -408,7 +406,7 @@ mod tests {
         with_warnings.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
         with_warnings.unverifiable_audio = vec![UnverifiableAudio {
             audio_filename: "b.mp3".to_string(),
-            error: "Permission denied".to_string(),
+            reason: "Permission denied".to_string(),
         }];
         let mut out = Vec::new();
 

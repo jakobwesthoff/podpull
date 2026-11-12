@@ -134,7 +134,7 @@ impl OutputState {
 pub struct UnreadableMetadata {
     pub path: PathBuf,
     /// Why the content could not be used
-    pub error: String,
+    pub reason: String,
 }
 
 /// An episode downloaded by an earlier run, as its metadata records it
@@ -402,7 +402,7 @@ pub fn scan_output_dir(
             }
             Err(error) => unreadable_metadata.push(UnreadableMetadata {
                 path,
-                error: error.to_string(),
+                reason: error.to_string(),
             }),
         }
 
@@ -871,7 +871,7 @@ mod tests {
             .map(|unreadable| &unreadable.path)
             .collect();
         assert_eq!(unreadable, vec![&dir.path().join("truncated.json")]);
-        assert!(state.unreadable_metadata()[0].error.contains("EOF"));
+        assert!(state.unreadable_metadata()[0].reason.contains("EOF"));
         assert!(
             state
                 .stored_episodes_with_guid("readable-guid")

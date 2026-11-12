@@ -103,11 +103,11 @@ pub(super) async fn verify_stored_audio(
                 Err(e) => {
                     reporter.report(ProgressEvent::StoredAudioUnverifiable {
                         audio_filename: stored.audio_filename.clone(),
-                        error: e.to_string(),
+                        reason: e.to_string(),
                     });
                     verification.unverifiable.push(UnverifiableAudio {
                         audio_filename: stored.audio_filename.clone(),
-                        error: e.to_string(),
+                        reason: e.to_string(),
                     });
                     continue;
                 }

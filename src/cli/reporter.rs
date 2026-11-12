@@ -269,7 +269,7 @@ impl ProgressReporter for IndicatifReporter {
             ProgressEvent::DownloadFailed {
                 download_id,
                 episode_title,
-                error,
+                reason,
             } => {
                 let bar = self.get_or_create_bar(download_id);
                 // Reserve space for " - " and some error text (at least 30 chars)
@@ -277,7 +277,7 @@ impl ProgressReporter for IndicatifReporter {
                 bar.abandon_with_message(format!(
                     "{FAILURE}{} - {}",
                     truncate_title(&episode_title, title_width.max(MIN_TITLE_WIDTH)).red(),
-                    error.red()
+                    reason.root.red()
                 ));
                 self.finish_bar(download_id);
             }
@@ -312,12 +312,12 @@ impl ProgressReporter for IndicatifReporter {
                 ));
             }
 
-            ProgressEvent::MetadataUnreadable { path, error } => {
+            ProgressEvent::MetadataUnreadable { path, reason } => {
                 // Printed above the progress bars so the warning outlives
                 // the transient status line.
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    unreadable_metadata_message(&path, &error).yellow()
+                    unreadable_metadata_message(&path, &reason).yellow()
                 ));
             }
 
@@ -354,11 +354,11 @@ impl ProgressReporter for IndicatifReporter {
 
             ProgressEvent::StoredAudioUnverifiable {
                 audio_filename,
-                error,
+                reason,
             } => {
                 let _ = self.multi.println(format!(
                     "{WARNING}{}",
-                    unverifiable_audio_message(&audio_filename, &error).yellow()
+                    unverifiable_audio_message(&audio_filename, &reason).yellow()
                 ));
             }
 
@@ -550,7 +550,7 @@ mod tests {
         });
         reporter.report(ProgressEvent::MetadataUnreadable {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.json"),
-            error: "EOF while parsing".to_string(),
+            reason: "EOF while parsing".to_string(),
         });
         reporter.report(ProgressEvent::VerifyingStoredAudio {
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
@@ -563,7 +563,7 @@ mod tests {
         });
         reporter.report(ProgressEvent::StoredAudioUnverifiable {
             audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
-            error: "Permission denied".to_string(),
+            reason: "Permission denied".to_string(),
         });
         reporter.report(ProgressEvent::StoredAudioDamaged {
             episode_title: "Sega Nomad".to_string(),
