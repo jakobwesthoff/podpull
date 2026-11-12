@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "multimedia"]
 # Repository tooling, the docs (ADRs, the project website and its demo
 # recording) and todos are of no use in the published crate. CLAUDE.md is
 # a local, untracked file.
-exclude = [".adr-dir", ".github/", "CLAUDE.md", "Justfile", "docs/", "todos/"]
+exclude = [".adr-dir", ".github/", "CLAUDE.md", "Justfile", "clippy.toml", "docs/", "todos/"]
 
 [dependencies]
 anyhow = "1.0.104"

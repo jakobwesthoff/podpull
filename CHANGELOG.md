@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Control and bidirectional characters in episode titles, file names and other text from the feed or the disk are shown escaped (`%` and the hex of their bytes, a `%` as `%25`), so they cannot flip or forge a line; file names on disk do not change
 - A feed that answers with an HTTP error status (4xx, 5xx) ends the run as a failed fetch instead of being parsed as a feed, so an error page that happens to parse as RSS is no longer synced
 - A warning printed while podpull runs (unreadable metadata, a slow disk, damaged audio) and an episode title with an emoji variation selector no longer leave a copy of the progress line behind on the terminal
 

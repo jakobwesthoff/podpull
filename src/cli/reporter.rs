@@ -11,6 +11,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use podpull::{ProgressEvent, ProgressReporter};
 
 use super::messages::*;
+use super::shown::{self, Safe};
 use super::*;
 
 /// Progress reporter using indicatif for terminal output
@@ -109,7 +110,7 @@ impl IndicatifReporter {
                 episode_index,
                 total_to_download,
                 status,
-                episode_title,
+                &shown::name(episode_title),
                 &self.env,
             )));
     }
@@ -155,7 +156,7 @@ impl ProgressReporter for IndicatifReporter {
                 self.main_bar.set_message(for_progress(&format!(
                     "{}Fetching feed: {}",
                     self.env.mark(Mark::Globe),
-                    self.env.cyan(&url)
+                    self.env.cyan(feed_source(&url))
                 )));
             }
 
@@ -163,7 +164,7 @@ impl ProgressReporter for IndicatifReporter {
                 self.main_bar.set_message(for_progress(&format!(
                     "{}Parsing feed: {}",
                     self.env.mark(Mark::Scroll),
-                    self.env.cyan(&source)
+                    self.env.cyan(feed_source(&source))
                 )));
             }
 
@@ -208,7 +209,7 @@ impl ProgressReporter for IndicatifReporter {
                     "{}{}",
                     self.env.mark(Mark::Headphones),
                     plan_message(
-                        &podcast_title,
+                        &shown::name(&podcast_title),
                         total_episodes,
                         new_episodes,
                         to_download,
@@ -275,7 +276,7 @@ impl ProgressReporter for IndicatifReporter {
                 if self.first_slow_warning(download_id) {
                     self.warn(
                         self.env
-                            .yellow(slow_sync_warning(&episode_title, threshold)),
+                            .yellow(slow_sync_warning(&shown::name(&episode_title), threshold)),
                     );
                 }
             }
@@ -319,7 +320,8 @@ impl ProgressReporter for IndicatifReporter {
                 bar.set_message(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Success),
-                    self.env.green(truncate_title(&episode_title, title_width))
+                    self.env
+                        .green(truncate_title(&shown::name(&episode_title), title_width))
                 )));
                 self.finish_bar(download_id);
             }
@@ -336,10 +338,10 @@ impl ProgressReporter for IndicatifReporter {
                     "{}{} - {}",
                     self.env.mark(Mark::Failure),
                     self.env.red(truncate_title(
-                        &episode_title,
+                        &shown::name(&episode_title),
                         title_width.max(MIN_TITLE_WIDTH)
                     )),
-                    self.env.red(&reason.root)
+                    self.env.red(shown::text(&reason.root))
                 )));
                 self.finish_bar(download_id);
             }
@@ -364,20 +366,28 @@ impl ProgressReporter for IndicatifReporter {
                 bar.set_message(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Success),
-                    self.env
-                        .green(already_stored_message(&episode_title, &audio_filename))
+                    self.env.green(already_stored_message(
+                        &shown::name(&episode_title),
+                        &shown::name(&audio_filename)
+                    ))
                 )));
                 self.finish_bar(download_id);
             }
 
             ProgressEvent::PartialFileStuck { path } => {
-                self.warn(self.env.yellow(stuck_partial_file_message(&path)));
+                self.warn(
+                    self.env
+                        .yellow(stuck_partial_file_message(&shown::path(&path))),
+                );
             }
 
             ProgressEvent::MetadataUnreadable { path, reason } => {
                 // Printed above the progress bars so the warning outlives
                 // the transient status line.
-                self.warn(self.env.yellow(unreadable_metadata_message(&path, &reason)));
+                self.warn(self.env.yellow(unreadable_metadata_message(
+                    &shown::path(&path),
+                    &shown::text(&reason),
+                )));
             }
 
             ProgressEvent::VerifyingStoredAudio {
@@ -403,7 +413,7 @@ impl ProgressReporter for IndicatifReporter {
                     checking_prefix(position, total, &self.env)
                 )));
                 self.main_bar
-                    .set_message(for_progress(&self.env.cyan(&audio_filename)));
+                    .set_message(for_progress(&self.env.cyan(shown::name(&audio_filename))));
                 self.main_bar.set_style(check_style);
             }
 
@@ -419,10 +429,10 @@ impl ProgressReporter for IndicatifReporter {
                 audio_filename,
                 reason,
             } => {
-                self.warn(
-                    self.env
-                        .yellow(unverifiable_audio_message(&audio_filename, &reason)),
-                );
+                self.warn(self.env.yellow(unverifiable_audio_message(
+                    &shown::name(&audio_filename),
+                    &shown::text(&reason),
+                )));
             }
 
             ProgressEvent::StoredAudioDamaged {
@@ -432,8 +442,8 @@ impl ProgressReporter for IndicatifReporter {
                 remedy,
             } => {
                 self.warn(self.env.yellow(damage_message(
-                    &episode_title,
-                    &audio_filename,
+                    &shown::name(&episode_title),
+                    &shown::name(&audio_filename),
                     kind,
                     remedy,
                 )));
@@ -464,7 +474,7 @@ fn episode_message(
     episode_index: usize,
     total_to_download: usize,
     status: &str,
-    episode_title: &str,
+    episode_title: &Safe,
     env: &StreamEnv,
 ) -> String {
     let index_width = (episode_index + 1).to_string().len() + total_to_download.to_string().len();
@@ -478,6 +488,16 @@ fn episode_message(
         status,
         truncate_title(episode_title, title_width)
     )
+}
+
+/// The source of a feed as a line shows it: a URL as it parses, a file as a
+/// name
+fn feed_source(source: &str) -> Safe {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        shown::url(source)
+    } else {
+        shown::name(source)
+    }
 }
 
 /// `text` as a progress bar can show it
@@ -499,8 +519,8 @@ fn for_progress(text: &str) -> String {
 ///
 /// Cuts between characters and counts the columns the terminal shows, since
 /// titles hold multi-byte characters such as umlauts and dashes.
-fn truncate_title(title: &str, max_len: usize) -> String {
-    console::truncate_str(title, max_len, "...").into_owned()
+fn truncate_title(title: &Safe, max_len: usize) -> String {
+    console::truncate_str(title.as_str(), max_len, "...").into_owned()
 }
 
 /// Calculate available width for episode title in progress bar
@@ -557,35 +577,41 @@ mod tests {
 
     #[test]
     fn truncate_title_keeps_a_title_that_fits() {
-        assert_eq!(truncate_title("Sega Nomad", 10), "Sega Nomad");
-        assert_eq!(truncate_title("Größe", 5), "Größe");
+        assert_eq!(truncate_title(&shown::name("Sega Nomad"), 10), "Sega Nomad");
+        assert_eq!(truncate_title(&shown::name("Größe"), 5), "Größe");
     }
 
     #[test]
     fn truncate_title_cuts_ascii_with_an_ellipsis() {
-        assert_eq!(truncate_title("Sega Nomad Special", 10), "Sega No...");
+        assert_eq!(
+            truncate_title(&shown::name("Sega Nomad Special"), 10),
+            "Sega No..."
+        );
     }
 
     #[test]
     fn truncate_title_cuts_before_a_multi_byte_character_instead_of_inside_it() {
         // The cut at byte 2 falls inside the first "ä" (bytes 1 and 2).
-        assert_eq!(truncate_title("Mädchen ääää", 5), "Mä...");
+        assert_eq!(truncate_title(&shown::name("Mädchen ääää"), 5), "Mä...");
         // The cut at byte 6 falls inside the en dash (bytes 5 to 7).
-        assert_eq!(truncate_title("Trek – Folge 499", 9), "Trek –...");
+        assert_eq!(
+            truncate_title(&shown::name("Trek – Folge 499"), 9),
+            "Trek –..."
+        );
     }
 
     #[test]
     fn episode_message_puts_the_status_between_the_place_and_the_title() {
         assert_eq!(
-            episode_message(0, 3, "", "Sega Nomad", &PLAIN),
+            episode_message(0, 3, "", &shown::name("Sega Nomad"), &PLAIN),
             "[1/3] Sega Nomad"
         );
         assert_eq!(
-            episode_message(0, 3, SYNCING_STATUS, "Sega Nomad", &PLAIN),
+            episode_message(0, 3, SYNCING_STATUS, &shown::name("Sega Nomad"), &PLAIN),
             "[1/3] Writing to disk: Sega Nomad"
         );
         assert_eq!(
-            episode_message(1, 3, SLOW_SYNC_STATUS, "Sega Nomad", &PLAIN),
+            episode_message(1, 3, SLOW_SYNC_STATUS, &shown::name("Sega Nomad"), &PLAIN),
             "[2/3] Slow disk, still writing: Sega Nomad"
         );
     }
@@ -594,7 +620,7 @@ mod tests {
     fn episode_message_cuts_a_long_title_and_keeps_the_status() {
         let title = "x".repeat(500);
 
-        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &title, &PLAIN);
+        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &shown::name(&title), &PLAIN);
 
         assert!(message.starts_with("[1/3] Slow disk, still writing: xxx"));
         assert!(message.ends_with("..."));
@@ -758,7 +784,8 @@ mod tests {
             Box::new(terminal.writer()),
         );
         events(&reporter);
-        drop(reporter);
+        // Read before the reporter ends, which clears the bars that are
+        // still drawn.
         terminal.lines()
     }
 
@@ -924,5 +951,44 @@ mod tests {
         });
 
         assert!(captured.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_hostile_title_is_escaped_on_the_screen() {
+        let screen = screen_after(200, |reporter| {
+            reporter.report(starting("\u{202E}3pm.evil"));
+        });
+
+        let text = screen.join("\n");
+        assert!(text.contains("%E2%80%AE3pm.evil"), "{text}");
+        assert!(!text.contains('\u{202E}'), "{text:?}");
+    }
+
+    #[test]
+    fn a_hostile_feed_source_is_escaped_on_the_screen() {
+        let screen = screen_after(120, |reporter| {
+            reporter.report(ProgressEvent::ParsingFeed {
+                source: "feeds/a\u{1b}[2J.xml".to_string(),
+            });
+        });
+
+        let text = screen.join("\n");
+        assert!(text.contains("feeds/a%1B[2J.xml"), "{text}");
+        assert!(!text.contains('\u{1b}'), "{text:?}");
+    }
+
+    #[test]
+    fn a_feed_url_shows_as_it_parses() {
+        let screen = screen_after(120, |reporter| {
+            reporter.report(ProgressEvent::FetchingFeed {
+                url: "https://example.com/My%20Show/feed.xml".to_string(),
+            });
+        });
+
+        assert!(
+            screen
+                .join("\n")
+                .contains("https://example.com/My%20Show/feed.xml")
+        );
     }
 }

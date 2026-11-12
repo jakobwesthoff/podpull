@@ -7,6 +7,7 @@
 
 pub(crate) mod messages;
 pub(crate) mod reporter;
+pub(crate) mod shown;
 pub(crate) mod stream_env;
 #[cfg(test)]
 mod virtual_terminal;

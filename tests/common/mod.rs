@@ -135,18 +135,19 @@ pub fn closed_port() -> u16 {
 
 /// A feed file with one episode whose audio cannot be fetched, because
 /// nothing listens at its address
-pub fn write_feed_with_unreachable_episode(directory: &Path) -> std::path::PathBuf {
+pub fn write_feed_with_unreachable_episode(directory: &Path, title: &str) -> std::path::PathBuf {
     let path = directory.join("feed.xml");
     std::fs::write(
         &path,
         format!(
             "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>Show</title>\
              <link>http://example.com/</link><description>d</description>\
-             <item><title>Episode 1</title><guid>ep1</guid>\
+             <item><title>{title}</title><guid>ep1</guid>\
              <pubDate>Mon, 09 Nov 2026 10:00:00 +0000</pubDate>\
              <enclosure url=\"http://127.0.0.1:{}/ep1.mp3\" length=\"1\" type=\"audio/mpeg\"/>\
              </item></channel></rss>",
-            closed_port()
+            closed_port(),
+            title = title
         ),
     )
     .expect("the feed file is written");

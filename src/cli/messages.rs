@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::io::Write;
-use std::path::Path;
 
 use podpull::{DamageKind, DamageRemedy, SyncResult};
 
+use super::shown::{self, Safe};
 use super::*;
 
 /// The counts of a finished sync, for its closing line
@@ -51,7 +51,7 @@ pub(crate) fn checking_prefix(position: usize, total: usize, env: &StreamEnv) ->
     )
 }
 
-pub(crate) fn already_stored_message(episode_title: &str, audio_filename: &str) -> String {
+pub(crate) fn already_stored_message(episode_title: &Safe, audio_filename: &Safe) -> String {
     format!(
         "\"{}\" is identical to {}; recorded its GUID there",
         episode_title, audio_filename
@@ -59,7 +59,7 @@ pub(crate) fn already_stored_message(episode_title: &str, audio_filename: &str) 
 }
 
 pub(crate) fn plan_message(
-    podcast_title: &str,
+    podcast_title: &Safe,
     total_episodes: usize,
     new_episodes: usize,
     to_download: usize,
@@ -82,7 +82,7 @@ pub(crate) fn plan_message(
     message
 }
 
-pub(crate) fn slow_sync_warning(episode_title: &str, threshold: std::time::Duration) -> String {
+pub(crate) fn slow_sync_warning(episode_title: &Safe, threshold: std::time::Duration) -> String {
     format!(
         "Still writing \"{}\" to the disk after {} s; a slow or network file system is the \
          likely reason, podpull keeps waiting",
@@ -91,22 +91,18 @@ pub(crate) fn slow_sync_warning(episode_title: &str, threshold: std::time::Durat
     )
 }
 
-pub(crate) fn stuck_partial_file_message(path: &Path) -> String {
+pub(crate) fn stuck_partial_file_message(path: &Safe) -> String {
     format!(
         "Could not remove the leftover partial file {}; its episode cannot be downloaded until it is deleted",
-        path.display()
+        path
     )
 }
 
-pub(crate) fn unreadable_metadata_message(path: &Path, error: &str) -> String {
-    format!(
-        "Could not read episode metadata {} ({})",
-        path.display(),
-        error
-    )
+pub(crate) fn unreadable_metadata_message(path: &Safe, error: &Safe) -> String {
+    format!("Could not read episode metadata {} ({})", path, error)
 }
 
-pub(crate) fn unverifiable_audio_message(audio_filename: &str, error: &str) -> String {
+pub(crate) fn unverifiable_audio_message(audio_filename: &Safe, error: &Safe) -> String {
     format!(
         "Could not read {} to check it against its recorded hash ({})",
         audio_filename, error
@@ -114,8 +110,8 @@ pub(crate) fn unverifiable_audio_message(audio_filename: &str, error: &str) -> S
 }
 
 pub(crate) fn damage_message(
-    episode_title: &str,
-    audio_filename: &str,
+    episode_title: &Safe,
+    audio_filename: &Safe,
     kind: DamageKind,
     remedy: DamageRemedy,
 ) -> String {
@@ -162,8 +158,8 @@ pub(crate) fn write_problem_lists(
                 out,
                 "  {}{} - {}",
                 env.mark(Mark::Cross),
-                env.yellow(&failed.title),
-                env.dim(&failed.reason.root)
+                env.yellow(shown::name(&failed.title)),
+                env.dim(shown::text(&failed.reason.root))
             )?;
         }
     }
@@ -176,8 +172,8 @@ pub(crate) fn write_problem_lists(
                 "  {}{}",
                 env.mark(Mark::Cross),
                 damage_message(
-                    &damaged.episode_title,
-                    &damaged.audio_filename,
+                    &shown::name(&damaged.episode_title),
+                    &shown::name(&damaged.audio_filename),
                     damaged.kind,
                     damaged.remedy
                 )
@@ -185,18 +181,23 @@ pub(crate) fn write_problem_lists(
         }
     }
 
-    let warnings: Vec<String> =
-        result
-            .stuck_partial_files
-            .iter()
-            .map(|path| stuck_partial_file_message(path))
-            .chain(result.unreadable_metadata.iter().map(|unreadable| {
-                unreadable_metadata_message(&unreadable.path, &unreadable.reason)
-            }))
-            .chain(result.unverifiable_audio.iter().map(|unverifiable| {
-                unverifiable_audio_message(&unverifiable.audio_filename, &unverifiable.reason)
-            }))
-            .collect();
+    let warnings: Vec<String> = result
+        .stuck_partial_files
+        .iter()
+        .map(|path| stuck_partial_file_message(&shown::path(path)))
+        .chain(result.unreadable_metadata.iter().map(|unreadable| {
+            unreadable_metadata_message(
+                &shown::path(&unreadable.path),
+                &shown::text(&unreadable.reason),
+            )
+        }))
+        .chain(result.unverifiable_audio.iter().map(|unverifiable| {
+            unverifiable_audio_message(
+                &shown::name(&unverifiable.audio_filename),
+                &shown::text(&unverifiable.reason),
+            )
+        }))
+        .collect();
     if !warnings.is_empty() {
         writeln!(out, "\n{}", env.yellow_bold("Warnings:"))?;
         for warning in warnings {
@@ -209,6 +210,13 @@ pub(crate) fn write_problem_lists(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn n(text: &str) -> Safe {
+        shown::name(text)
+    }
+
+    fn t(text: &str) -> Safe {
+        shown::text(text)
+    }
 
     const PLAIN: StreamEnv = StreamEnv {
         color: false,
@@ -220,12 +228,12 @@ mod tests {
     };
     use crate::cli::test_result as result;
     use podpull::UnverifiableAudio;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn plan_message_shows_only_new_episodes_without_limit_or_repairs() {
         assert_eq!(
-            plan_message("Show", 10, 2, 2, 0, &PLAIN),
+            plan_message(&n("Show"), 10, 2, 2, 0, &PLAIN),
             "Show • 10 total, 2 new"
         );
     }
@@ -233,7 +241,7 @@ mod tests {
     #[test]
     fn plan_message_shows_the_limit() {
         assert_eq!(
-            plan_message("Show", 10, 2, 1, 0, &PLAIN),
+            plan_message(&n("Show"), 10, 2, 1, 0, &PLAIN),
             "Show • 10 total, 2 new, downloading 1"
         );
     }
@@ -241,11 +249,11 @@ mod tests {
     #[test]
     fn plan_message_shows_repairs_apart_from_the_limit() {
         assert_eq!(
-            plan_message("Show", 10, 2, 2, 1, &PLAIN),
+            plan_message(&n("Show"), 10, 2, 2, 1, &PLAIN),
             "Show • 10 total, 2 new, repairing 1"
         );
         assert_eq!(
-            plan_message("Show", 10, 2, 1, 1, &PLAIN),
+            plan_message(&n("Show"), 10, 2, 1, 1, &PLAIN),
             "Show • 10 total, 2 new, downloading 1, repairing 1"
         );
     }
@@ -253,7 +261,9 @@ mod tests {
     #[test]
     fn stuck_partial_file_message_names_the_file() {
         assert_eq!(
-            stuck_partial_file_message(Path::new("/podcasts/2024-01-15-Episode.mp3.partial")),
+            stuck_partial_file_message(&shown::path(Path::new(
+                "/podcasts/2024-01-15-Episode.mp3.partial"
+            ))),
             "Could not remove the leftover partial file /podcasts/2024-01-15-Episode.mp3.partial; \
              its episode cannot be downloaded until it is deleted"
         );
@@ -262,7 +272,7 @@ mod tests {
     #[test]
     fn slow_sync_warning_names_the_wait_and_its_likely_reason() {
         assert_eq!(
-            slow_sync_warning("Sega Nomad", std::time::Duration::from_secs(30)),
+            slow_sync_warning(&n("Sega Nomad"), std::time::Duration::from_secs(30)),
             "Still writing \"Sega Nomad\" to the disk after 30 s; a slow or network file \
              system is the likely reason, podpull keeps waiting"
         );
@@ -272,8 +282,8 @@ mod tests {
     fn unreadable_metadata_message_names_the_file() {
         assert_eq!(
             unreadable_metadata_message(
-                Path::new("/podcasts/2024-01-15-Episode.json"),
-                "EOF while parsing a string at line 1 column 15"
+                &shown::path(Path::new("/podcasts/2024-01-15-Episode.json")),
+                &t("EOF while parsing a string at line 1 column 15")
             ),
             "Could not read episode metadata /podcasts/2024-01-15-Episode.json \
              (EOF while parsing a string at line 1 column 15)"
@@ -282,8 +292,8 @@ mod tests {
 
     fn damage(remedy: DamageRemedy) -> String {
         damage_message(
-            "Sega Nomad",
-            "2024-12-19-Sega Nomad.mp3",
+            &n("Sega Nomad"),
+            &n("2024-12-19-Sega Nomad.mp3"),
             DamageKind::Mismatch,
             remedy,
         )
@@ -291,8 +301,8 @@ mod tests {
 
     fn missing(remedy: DamageRemedy) -> String {
         damage_message(
-            "Sega Nomad",
-            "2024-12-19-Sega Nomad.mp3",
+            &n("Sega Nomad"),
+            &n("2024-12-19-Sega Nomad.mp3"),
             DamageKind::Missing,
             remedy,
         )
@@ -356,7 +366,7 @@ mod tests {
     #[test]
     fn already_stored_message_names_episode_and_file() {
         assert_eq!(
-            already_stored_message("Sega Nomad", "2024-12-19-Sega Nomad.mp3"),
+            already_stored_message(&n("Sega Nomad"), &n("2024-12-19-Sega Nomad.mp3")),
             "\"Sega Nomad\" is identical to 2024-12-19-Sega Nomad.mp3; recorded its GUID there"
         );
     }
@@ -372,7 +382,7 @@ mod tests {
     #[test]
     fn unverifiable_audio_message_names_file_and_error() {
         assert_eq!(
-            unverifiable_audio_message("2024-12-19-Sega Nomad.mp3", "Permission denied"),
+            unverifiable_audio_message(&n("2024-12-19-Sega Nomad.mp3"), &t("Permission denied")),
             "Could not read 2024-12-19-Sega Nomad.mp3 to check it against its \
              recorded hash (Permission denied)"
         );
@@ -412,10 +422,15 @@ mod tests {
 
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("Warnings:"));
-        assert!(out.contains(&stuck_partial_file_message(Path::new(
-            "/podcasts/a.mp3.partial"
-        ))));
-        assert!(out.contains(&unverifiable_audio_message("b.mp3", "Permission denied")));
+        assert!(
+            out.contains(&stuck_partial_file_message(&shown::path(Path::new(
+                "/podcasts/a.mp3.partial"
+            ))))
+        );
+        assert!(out.contains(&unverifiable_audio_message(
+            &n("b.mp3"),
+            &t("Permission denied")
+        )));
     }
 
     #[test]
@@ -461,7 +476,7 @@ mod tests {
 
     #[test]
     fn the_plan_colours_its_counts_when_colour_is_on() {
-        let plan = plan_message("Show", 10, 2, 2, 0, &COLOURED);
+        let plan = plan_message(&n("Show"), 10, 2, 2, 0, &COLOURED);
 
         assert_eq!(
             plan,
@@ -481,5 +496,122 @@ mod tests {
             "\n\u{1b}[31m\u{1b}[1mFailed episodes:\u{1b}[0m\n  \
              ✗ \u{1b}[33mEpisode 0\u{1b}[0m - \u{1b}[2mHTTP error 404\u{1b}[0m\n"
         );
+    }
+
+    // =========================================================
+    // Names from the feed and from the disk
+    // =========================================================
+
+    const HOSTILE: &str = "Episode 42: \u{202E}3pm.evil";
+    const HOSTILE_SHOWN: &str = "Episode 42: %E2%80%AE3pm.evil";
+
+    fn has_escaped_character(text: &str) -> bool {
+        text.chars()
+            .any(|character| character != '\n' && shown::is_escaped(character))
+    }
+
+    fn lists_of(result: &SyncResult) -> String {
+        let mut out = Vec::new();
+        write_problem_lists(result, &mut out, &PLAIN).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn the_failed_list_shows_a_hostile_title_escaped() {
+        let mut failed = result(0, 1, 0);
+        failed.failed_episodes[0].title = HOSTILE.to_string();
+
+        let lists = lists_of(&failed);
+
+        assert!(lists.contains(HOSTILE_SHOWN), "{lists}");
+        assert!(!has_escaped_character(&lists), "{lists:?}");
+    }
+
+    #[test]
+    fn the_failed_list_shows_a_percent_in_a_title_as_percent_25() {
+        let mut failed = result(0, 1, 0);
+        failed.failed_episodes[0].title = "100% Retro".to_string();
+
+        assert!(lists_of(&failed).contains("100%25 Retro"));
+    }
+
+    #[test]
+    fn the_failed_list_shows_a_hostile_reason_escaped() {
+        let mut failed = result(0, 1, 0);
+        failed.failed_episodes[0].reason =
+            podpull::FailureReason::without_subject("refused\u{1b}[2J");
+
+        let lists = lists_of(&failed);
+
+        assert!(lists.contains("refused%1B[2J"), "{lists}");
+        assert!(!has_escaped_character(&lists), "{lists:?}");
+    }
+
+    #[test]
+    fn the_damaged_list_shows_hostile_names_escaped() {
+        let mut damaged = result(0, 0, 1);
+        damaged.damaged[0].episode_title = HOSTILE.to_string();
+        damaged.damaged[0].audio_filename = "a\u{1b}.mp3".to_string();
+
+        let lists = lists_of(&damaged);
+
+        assert!(lists.contains(HOSTILE_SHOWN), "{lists}");
+        assert!(lists.contains("a%1B.mp3"), "{lists}");
+        assert!(!has_escaped_character(&lists), "{lists:?}");
+    }
+
+    #[test]
+    fn the_warnings_show_hostile_paths_and_reasons_escaped() {
+        let mut warned = result(0, 0, 0);
+        warned.stuck_partial_files = vec![PathBuf::from("/podcasts/a\u{1b}.partial")];
+        warned.unreadable_metadata = vec![podpull::UnreadableMetadata {
+            path: PathBuf::from("/podcasts/b\u{202E}.json"),
+            reason: "bad\u{1b}".to_string(),
+        }];
+        warned.unverifiable_audio = vec![UnverifiableAudio {
+            audio_filename: "c\u{2028}.mp3".to_string(),
+            reason: "denied\u{7}".to_string(),
+        }];
+
+        let lists = lists_of(&warned);
+
+        for shown in [
+            "a%1B.partial",
+            "b%E2%80%AE.json",
+            "bad%1B",
+            "c%E2%80%A8.mp3",
+            "denied%07",
+        ] {
+            assert!(lists.contains(shown), "{shown} in {lists}");
+        }
+        assert!(!has_escaped_character(&lists), "{lists:?}");
+    }
+
+    #[test]
+    fn the_plan_shows_a_hostile_podcast_title_escaped() {
+        let plan = plan_message(&n("\u{1b}[2JShow"), 1, 1, 1, 0, &PLAIN);
+
+        assert_eq!(plan, "%1B[2JShow • 1 total, 1 new");
+    }
+
+    #[test]
+    fn the_messages_show_a_hostile_title_escaped() {
+        let title = n(HOSTILE);
+
+        let messages = [
+            slow_sync_warning(&title, std::time::Duration::from_secs(30)),
+            already_stored_message(&title, &n("a.mp3")),
+            damage_message(
+                &title,
+                &n("a.mp3"),
+                DamageKind::Missing,
+                DamageRemedy::Repairing,
+            ),
+        ];
+
+        for message in messages {
+            assert!(message.contains(HOSTILE_SHOWN), "{message}");
+            assert!(!has_escaped_character(&message), "{message:?}");
+        }
     }
 }

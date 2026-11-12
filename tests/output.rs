@@ -52,7 +52,7 @@ fn no_color_leaves_no_escape_sequence() {
 #[test]
 fn a_quiet_run_prints_the_problem_lists_on_stderr_only() {
     let directory = tempfile::tempdir().unwrap();
-    let feed = common::write_feed_with_unreachable_episode(directory.path());
+    let feed = common::write_feed_with_unreachable_episode(directory.path(), "Episode 1");
 
     let run = run(podpull_command()
         .arg("--quiet")
@@ -63,4 +63,24 @@ fn a_quiet_run_prints_the_problem_lists_on_stderr_only() {
     assert_eq!(run.stdout, "", "{run:?}");
     assert!(run.stderr.contains("Failed episodes:"), "{run:?}");
     assert!(run.stderr.contains("Episode 1"), "{run:?}");
+}
+
+#[test]
+fn a_hostile_title_from_the_feed_is_shown_escaped() {
+    let directory = tempfile::tempdir().unwrap();
+    let feed = common::write_feed_with_unreachable_episode(
+        directory.path(),
+        "Episode 42: \u{202E}3pm.evil 100%",
+    );
+
+    let run = run(podpull_command()
+        .arg(&feed)
+        .arg(directory.path().join("out")));
+
+    assert!(
+        run.stdout.contains("Episode 42: %E2%80%AE3pm.evil 100%25"),
+        "{run:?}"
+    );
+    assert!(!run.stdout.contains('\u{202E}'), "{run:?}");
+    assert!(!run.stderr.contains('\u{202E}'), "{run:?}");
 }

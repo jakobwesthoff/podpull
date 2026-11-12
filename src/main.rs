@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         println!(
             "\n{}Output: {}\n",
             env.mark(Mark::Folder),
-            env.cyan(args.output_dir.display())
+            env.cyan(cli::shown::path(&args.output_dir))
         );
     }
 

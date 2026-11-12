@@ -33,7 +33,10 @@ pub fn read_feed_file(path: &Path) -> Result<Vec<u8>, FeedError> {
 /// Construct a file:// URL for a local file path
 pub fn file_path_to_url(path: &Path) -> Url {
     Url::from_file_path(path).unwrap_or_else(|_| {
-        Url::parse(&format!("file://{}", path.display())).expect("valid file URL")
+        // The text builds a URL that the parser escapes; nothing is shown.
+        #[allow(clippy::disallowed_methods)]
+        let text = format!("file://{}", path.display());
+        Url::parse(&text).expect("valid file URL")
     })
 }
 
@@ -45,6 +48,23 @@ pub fn is_url(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_url_of_an_absolute_path_names_the_path() {
+        assert_eq!(
+            file_path_to_url(Path::new("/feeds/show.xml")).as_str(),
+            "file:///feeds/show.xml"
+        );
+    }
+
+    #[test]
+    fn a_relative_path_still_gets_a_file_url() {
+        // The first part of a relative path takes the place of the host.
+        assert_eq!(
+            file_path_to_url(Path::new("feeds/show.xml")).as_str(),
+            "file://feeds/show.xml"
+        );
+    }
 
     #[test]
     fn is_url_detects_http() {

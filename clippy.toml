@@ -1,0 +1,5 @@
+# A path reaches a line only through `cli::shown`, which escapes it. The
+# lossy text of `Path::display` shows a control character as it is.
+disallowed-methods = [
+    { path = "std::path::Path::display", reason = "show a path through `cli::shown::path`" },
+]
