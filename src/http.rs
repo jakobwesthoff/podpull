@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::error::Error;
-use std::fmt;
 use std::io;
 use std::pin::Pin;
 
@@ -47,9 +46,11 @@ pub enum HttpErrorKind {
 ///
 /// The kind is decided once, where the HTTP library's error is turned into
 /// this one, so nothing else needs to know that library.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{source}")]
 pub struct HttpError {
     kind: HttpErrorKind,
+    #[source]
     source: Box<dyn Error + Send + Sync>,
 }
 
@@ -63,18 +64,6 @@ impl HttpError {
 
     pub fn kind(&self) -> HttpErrorKind {
         self.kind
-    }
-}
-
-impl fmt::Display for HttpError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.source.fmt(f)
-    }
-}
-
-impl Error for HttpError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.source.as_ref())
     }
 }
 

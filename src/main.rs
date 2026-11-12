@@ -16,7 +16,7 @@ mod cli;
 
 use cli::messages::{completion_summary, write_problem_lists};
 use cli::reporter::IndicatifReporter;
-use cli::{Env, Mark};
+use cli::{Mark, StreamEnv};
 
 /// Download and synchronize podcasts from RSS feeds
 #[derive(Parser, Debug)]
@@ -76,7 +76,7 @@ fn sync_options(args: &Args) -> SyncOptions {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let env = Env::detect_stdout();
+    let env = StreamEnv::detect_stdout();
 
     // Quiet output carries only problems, so a script capturing it sees
     // nothing on a clean run.

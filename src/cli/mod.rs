@@ -5,13 +5,13 @@
 //! The terminal side of the binary: the progress display and the messages
 //! it prints.
 
-pub(crate) mod env;
 pub(crate) mod messages;
 pub(crate) mod reporter;
+pub(crate) mod stream_env;
 #[cfg(test)]
 mod virtual_terminal;
 
-pub(crate) use env::{Env, Mark};
+pub(crate) use stream_env::{Mark, StreamEnv};
 
 #[cfg(test)]
 use podpull::{DamageKind, DamageRemedy, DamagedAudio, FailedEpisode, FailureReason, SyncResult};

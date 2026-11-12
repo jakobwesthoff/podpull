@@ -22,11 +22,11 @@ pub(crate) struct IndicatifReporter {
     main_bar: ProgressBar,
     /// Where the lines of warnings go, outside what indicatif tracks
     warnings: Mutex<Box<dyn Write + Send>>,
-    env: Env,
+    env: StreamEnv,
 }
 
 impl IndicatifReporter {
-    pub(crate) fn new(env: Env) -> Self {
+    pub(crate) fn new(env: StreamEnv) -> Self {
         Self::with_target(
             env,
             ProgressDrawTarget::stderr(),
@@ -37,7 +37,7 @@ impl IndicatifReporter {
     /// A reporter drawing on `target`, with warning lines going to
     /// `warnings`, which has to show them on the same screen as the target
     pub(crate) fn with_target(
-        env: Env,
+        env: StreamEnv,
         target: ProgressDrawTarget,
         warnings: Box<dyn Write + Send>,
     ) -> Self {
@@ -465,7 +465,7 @@ fn episode_message(
     total_to_download: usize,
     status: &str,
     episode_title: &str,
-    env: &Env,
+    env: &StreamEnv,
 ) -> String {
     let index_width = (episode_index + 1).to_string().len() + total_to_download.to_string().len();
     let title_width = available_title_width(index_width)
@@ -528,7 +528,7 @@ mod tests {
     use crate::cli::virtual_terminal::VirtualTerminal;
     use podpull::FailureReason;
 
-    const PLAIN: Env = Env {
+    const PLAIN: StreamEnv = StreamEnv {
         color: false,
         utf8: true,
     };
@@ -819,7 +819,7 @@ mod tests {
         // terminal honest.
         let terminal = VirtualTerminal::new(100);
         let reporter = IndicatifReporter::with_target(
-            Env {
+            StreamEnv {
                 color: false,
                 utf8: false,
             },

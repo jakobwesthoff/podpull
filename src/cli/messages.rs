@@ -10,7 +10,7 @@ use podpull::{DamageKind, DamageRemedy, SyncResult};
 use super::*;
 
 /// The counts of a finished sync, for its closing line
-pub(crate) fn completion_summary(result: &SyncResult, env: &Env) -> String {
+pub(crate) fn completion_summary(result: &SyncResult, env: &StreamEnv) -> String {
     let mut parts = vec![
         format!("{} downloaded", env.bold_green(result.downloaded)),
         format!("{} existing", env.yellow(result.existing)),
@@ -43,7 +43,7 @@ pub(crate) fn completion_summary(result: &SyncResult, env: &Env) -> String {
 }
 
 /// Which of the files a check hashes is being read
-pub(crate) fn checking_prefix(position: usize, total: usize, env: &Env) -> String {
+pub(crate) fn checking_prefix(position: usize, total: usize, env: &StreamEnv) -> String {
     format!(
         "Checking stored audio [{}/{}]",
         env.cyan(position),
@@ -64,7 +64,7 @@ pub(crate) fn plan_message(
     new_episodes: usize,
     to_download: usize,
     repairs: usize,
-    env: &Env,
+    env: &StreamEnv,
 ) -> String {
     let mut message = format!(
         "{} • {} total, {} new",
@@ -153,7 +153,7 @@ pub(crate) fn damage_message(
 pub(crate) fn write_problem_lists(
     result: &SyncResult,
     out: &mut impl Write,
-    env: &Env,
+    env: &StreamEnv,
 ) -> std::io::Result<()> {
     if !result.failed_episodes.is_empty() {
         writeln!(out, "\n{}", env.red_bold("Failed episodes:"))?;
@@ -210,11 +210,11 @@ pub(crate) fn write_problem_lists(
 mod tests {
     use super::*;
 
-    const PLAIN: Env = Env {
+    const PLAIN: StreamEnv = StreamEnv {
         color: false,
         utf8: true,
     };
-    const COLOURED: Env = Env {
+    const COLOURED: StreamEnv = StreamEnv {
         color: true,
         utf8: true,
     };

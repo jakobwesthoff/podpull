@@ -82,16 +82,16 @@ const BOLD_MAGENTA: Style = Style::new().bold().magenta();
 /// Colour is decided per value and applied per call, so no global switch
 /// is involved and tests can render with colour on and off side by side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Env {
+pub(crate) struct StreamEnv {
     /// Colour sequences may be written
     pub(crate) color: bool,
     /// Unicode symbols may be written
     pub(crate) utf8: bool,
 }
 
-impl Env {
-    pub(crate) fn new(color: bool, utf8: bool) -> Env {
-        Env { color, utf8 }
+impl StreamEnv {
+    pub(crate) fn new(color: bool, utf8: bool) -> StreamEnv {
+        StreamEnv { color, utf8 }
     }
 
     /// The environment of stdout as the process sees it
@@ -100,8 +100,8 @@ impl Env {
     /// and a terminal that supports colour. The symbols follow the rule of
     /// `console::Emoji`, which is the rule of every symbol podpull has shown
     /// so far.
-    pub(crate) fn detect_stdout() -> Env {
-        Env::new(
+    pub(crate) fn detect_stdout() -> StreamEnv {
+        StreamEnv::new(
             console::colors_enabled(),
             Emoji("unicode", "").to_string() == "unicode",
         )
@@ -163,11 +163,11 @@ impl Env {
 mod tests {
     use super::*;
 
-    const ON: Env = Env {
+    const ON: StreamEnv = StreamEnv {
         color: true,
         utf8: true,
     };
-    const OFF: Env = Env {
+    const OFF: StreamEnv = StreamEnv {
         color: false,
         utf8: false,
     };
@@ -213,8 +213,8 @@ mod tests {
     fn detect_reads_the_environment_of_stdout() {
         // The values depend on where the tests run; the call has to work
         // anywhere.
-        let env = Env::detect_stdout();
+        let env = StreamEnv::detect_stdout();
 
-        assert_eq!(env, Env::new(env.color, env.utf8));
+        assert_eq!(env, StreamEnv::new(env.color, env.utf8));
     }
 }
