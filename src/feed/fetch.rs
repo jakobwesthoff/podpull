@@ -11,12 +11,12 @@ use crate::error::FeedError;
 use crate::http::HttpClient;
 
 /// Fetch raw feed bytes from a URL (without parsing)
-pub async fn fetch_feed_bytes<C: HttpClient>(client: &C, url: &str) -> Result<Bytes, FeedError> {
+pub async fn fetch_feed_bytes<C: HttpClient>(client: &C, url: &Url) -> Result<Bytes, FeedError> {
     let bytes = client
-        .get_bytes(url)
+        .get_bytes(url.as_str())
         .await
         .map_err(|e| FeedError::FetchFailed {
-            url: url.to_string(),
+            url: url.clone(),
             source: e,
         })?;
     Ok(bytes)

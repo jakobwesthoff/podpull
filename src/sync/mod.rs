@@ -225,7 +225,7 @@ async fn load_podcast<C: HttpClient>(
         reporter.report(ProgressEvent::FetchingFeed {
             url: feed_source.to_string(),
         });
-        let bytes = fetch_feed_bytes(client, feed_source).await?;
+        let bytes = fetch_feed_bytes(client, &feed_url).await?;
 
         reporter.report(ProgressEvent::ParsingFeed {
             source: feed_source.to_string(),

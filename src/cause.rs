@@ -12,7 +12,7 @@ use std::error::Error;
 /// URL itself. The text is tidied to read inside a sentence: an operating
 /// system's ` (os error N)` is dropped and a leading capital is lowercased
 /// unless it starts an acronym.
-pub(crate) fn root_text(error: &(dyn Error + 'static)) -> String {
+pub fn root_text(error: &(dyn Error + 'static)) -> String {
     let mut root = error;
     let mut text = error.to_string();
     let mut link = error.source();

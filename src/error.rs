@@ -14,7 +14,7 @@ use crate::reason::{FailureReason, Subject};
 pub enum FeedError {
     #[error("Failed to fetch feed from {url}: {source}")]
     FetchFailed {
-        url: String,
+        url: url::Url,
         #[source]
         source: HttpError,
     },
@@ -34,9 +34,6 @@ pub enum FeedError {
 
     #[error("Episode '{title}' has no enclosure (audio file)")]
     MissingEnclosure { title: String },
-
-    #[error("Failed to parse date '{date_str}': {reason}")]
-    InvalidDate { date_str: String, reason: String },
 }
 
 /// Errors that can occur during episode downloads
@@ -164,9 +161,6 @@ impl MetadataError {
 /// Errors that can occur when scanning the output directory
 #[derive(Error, Debug)]
 pub enum StateError {
-    #[error("Output directory does not exist: {0}")]
-    DirectoryNotFound(PathBuf),
-
     #[error("Failed to read directory {path}: {source}")]
     ReadDirectoryFailed {
         path: PathBuf,

@@ -25,6 +25,7 @@ mod sync;
 #[cfg(test)]
 mod test_server;
 
+pub use cause::root_text;
 pub use damage::{DamageKind, DamageRemedy, DamagedAudio};
 pub use error::{FeedError, MetadataError, StateError, SyncError};
 pub use http::{ByteStream, HttpClient, HttpError, HttpErrorKind, HttpResponse, ReqwestClient};
