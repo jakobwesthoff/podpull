@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -77,6 +77,8 @@ struct Args {
 struct IndicatifReporter {
     multi: MultiProgress,
     bars: Mutex<HashMap<usize, ProgressBar>>,
+    /// Slots whose download already printed the warning about a slow disk
+    slow_warned: Mutex<HashSet<usize>>,
     main_bar: ProgressBar,
 }
 
@@ -95,6 +97,7 @@ impl IndicatifReporter {
         Self {
             multi,
             bars: Mutex::new(HashMap::new()),
+            slow_warned: Mutex::new(HashSet::new()),
             main_bar,
         }
     }
@@ -117,6 +120,18 @@ impl IndicatifReporter {
         bar.set_style(style);
         bars.insert(download_id, bar.clone());
         bar
+    }
+
+    /// Whether the warning about a slow disk is still to be printed for the
+    /// download in this slot
+    ///
+    /// A slow share can hold up several syncs of one download, and the
+    /// warning says the same each time.
+    fn first_slow_warning(&self, download_id: usize) -> bool {
+        self.slow_warned
+            .lock()
+            .expect("no code panics while holding the warned slots")
+            .insert(download_id)
     }
 
     /// Show an episode's place in the queue, a status and its title on its
@@ -213,6 +228,10 @@ impl ProgressReporter for IndicatifReporter {
                 total_to_download,
                 content_length,
             } => {
+                self.slow_warned
+                    .lock()
+                    .expect("no code panics while holding the warned slots")
+                    .remove(&download_id);
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_length(content_length.unwrap_or(0));
                 bar.set_position(0);
@@ -256,10 +275,12 @@ impl ProgressReporter for IndicatifReporter {
                 );
                 // The bar text is cut at the terminal width, so the reason
                 // for the wait goes on a line of its own above the bars.
-                let _ = self.multi.println(format!(
-                    "{WARNING}{}",
-                    slow_sync_warning(&episode_title, threshold).yellow()
-                ));
+                if self.first_slow_warning(download_id) {
+                    let _ = self.multi.println(format!(
+                        "{WARNING}{}",
+                        slow_sync_warning(&episode_title, threshold).yellow()
+                    ));
+                }
             }
 
             ProgressEvent::DownloadSynced {
@@ -819,6 +840,27 @@ mod tests {
             stuck_partial_file_message(Path::new("/podcasts/2024-01-15-Episode.mp3.partial")),
             "Could not remove the leftover partial file /podcasts/2024-01-15-Episode.mp3.partial; \
              its episode cannot be downloaded until it is deleted"
+        );
+    }
+
+    #[test]
+    fn the_slow_disk_warning_is_printed_once_per_download() {
+        let reporter = IndicatifReporter::new();
+
+        assert!(reporter.first_slow_warning(0));
+        assert!(!reporter.first_slow_warning(0));
+        assert!(reporter.first_slow_warning(1), "another download");
+
+        reporter.report(ProgressEvent::DownloadStarting {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            episode_index: 1,
+            total_to_download: 2,
+            content_length: None,
+        });
+        assert!(
+            reporter.first_slow_warning(0),
+            "the next download of the slot"
         );
     }
 

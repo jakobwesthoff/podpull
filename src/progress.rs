@@ -60,11 +60,13 @@ pub enum ProgressEvent {
         total_bytes: Option<u64>,
     },
 
-    /// A file of a download is being written to the disk and podpull waits
-    /// for the file system to confirm it
+    /// A download waits for the file system to confirm the data it wrote,
+    /// after the last byte of the audio or while it writes the episode
+    /// metadata
     ///
-    /// Happens after the last byte of the audio arrived and again for the
-    /// episode metadata. On a network share the wait can take minutes.
+    /// On a network share such a wait can take minutes. A wait for a sync
+    /// during the download is not announced; it is reported only when it
+    /// turns slow (`DownloadSyncSlow`).
     DownloadSyncing {
         /// Identifies the download slot
         download_id: usize,
@@ -75,8 +77,12 @@ pub enum ProgressEvent {
         total_to_download: usize,
     },
 
-    /// The wait announced by `DownloadSyncing` has lasted longer than
-    /// `threshold`; podpull keeps waiting
+    /// A wait for the file system has lasted longer than `threshold`;
+    /// podpull keeps waiting
+    ///
+    /// Follows `DownloadSyncing` for the waits that are announced. A wait
+    /// during the download, which is not announced, reports this event first;
+    /// `DownloadSynced` follows when it ends.
     DownloadSyncSlow {
         download_id: usize,
         episode_title: String,
@@ -86,8 +92,8 @@ pub enum ProgressEvent {
         threshold: Duration,
     },
 
-    /// The wait announced by `DownloadSyncing` ended, whether the file
-    /// system confirmed the write or reported an error
+    /// A wait reported by `DownloadSyncing` or `DownloadSyncSlow` ended,
+    /// whether the file system confirmed the write or reported an error
     DownloadSynced {
         download_id: usize,
         episode_title: String,

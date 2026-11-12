@@ -32,6 +32,25 @@ impl GateReporter {
         }
     }
 
+    /// Bytes downloaded as of the last progress event before the first wait
+    /// event (`DownloadSyncing` or `DownloadSyncSlow`), or `None` if no wait was
+    /// reported
+    pub(crate) fn bytes_before_first_wait(&self) -> Option<u64> {
+        let mut bytes = 0;
+        for event in self.events.lock().unwrap().iter() {
+            match event {
+                ProgressEvent::DownloadProgress {
+                    bytes_downloaded, ..
+                } => bytes = *bytes_downloaded,
+                ProgressEvent::DownloadSyncing { .. } | ProgressEvent::DownloadSyncSlow { .. } => {
+                    return Some(bytes);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Names of the wait events reported so far, in order
     pub(crate) fn waits(&self) -> Vec<&'static str> {
         self.events

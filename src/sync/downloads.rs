@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt};
 
 use super::{FailedEpisode, SyncOptions};
 use crate::episode::{
-    DISK_WAIT_SLOW_AFTER, DownloadContext, SyncSettings, filename_claim_key, hash_file,
+    DISK_WAIT_SLOW_AFTER, DownloadContext, SyncSettings, WaitNotice, filename_claim_key, hash_file,
     stage_download, with_disk_wait_notice,
 };
 use crate::http::HttpClient;
@@ -240,6 +240,7 @@ pub(super) async fn download_planned<C: HttpClient>(
             &episode.title,
             reporter,
             DISK_WAIT_SLOW_AFTER,
+            WaitNotice::Always,
         )
         .await?
     };

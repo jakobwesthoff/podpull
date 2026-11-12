@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- After the last byte of a download, the progress line says that the file is being written to the disk, instead of staying at 100 % without a sign. After 30 seconds it says that the disk is slow and names a slow or network file system as the likely reason, and podpull keeps waiting
+- When a download has to wait for the disk after its last byte, the progress line says that the file is being written, instead of staying at 100 % without a sign. After 30 seconds, or when a wait during the download lasts that long, it says that the disk is slow and names a slow or network file system as the likely reason, and podpull keeps waiting
+- A download is synced every 4 MiB while it is written, instead of once after the last byte. The progress bar follows what a network share has received, and Ctrl-C ends the run within the time the share needs for about 4 MiB per running download (at most `--concurrent` of them; `-c 1` gives the shortest wait), where it had to wait for the whole episode
 - An episode whose long title has a multi-byte character, such as an umlaut or a dash, at the cut of the progress line no longer fails to download with a panic
 
 ## [2.0.2] - 2026-10-06

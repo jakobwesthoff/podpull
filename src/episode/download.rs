@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use super::disk_wait::{DISK_WAIT_SLOW_AFTER, with_disk_wait_notice};
+use super::disk_wait::{DISK_WAIT_SLOW_AFTER, WaitNotice, with_disk_wait_notice};
 use super::partial::{FinishedPartial, PartialWriter, SyncFn};
 use crate::error::DownloadError;
 use crate::feed::Episode;
@@ -84,11 +84,20 @@ impl StagedDownload {
     }
 }
 
+/// Bytes written between two syncs of a download in progress
+///
+/// A sync blocks until the file system has the data, so the longest sync of
+/// a download is the time the file system needs for this many bytes. At the
+/// 1.2 to 1.4 MB/s measured on an SMB share that is about three seconds.
+pub(crate) const SYNC_STEP_BYTES: u64 = 4 * 1024 * 1024;
+
 /// How a download syncs its partial file
 #[derive(Clone)]
 pub(crate) struct SyncSettings {
     /// Flushes a file to stable storage
     pub(crate) sync: SyncFn,
+    /// Bytes written between two syncs while the download is in progress
+    pub(crate) step_bytes: u64,
     /// How long a sync may take before the display says that the disk is slow
     pub(crate) slow_after: Duration,
 }
@@ -97,6 +106,7 @@ impl Default for SyncSettings {
     fn default() -> Self {
         Self {
             sync: Arc::new(sync_file),
+            step_bytes: SYNC_STEP_BYTES,
             slow_after: DISK_WAIT_SLOW_AFTER,
         }
     }
@@ -140,8 +150,12 @@ pub(crate) async fn stage_download<C: HttpClient>(
         content_length: response.content_length,
     });
 
-    let mut writer =
-        PartialWriter::create(partial_path(output_path), settings.sync.clone()).await?;
+    let mut writer = PartialWriter::create(
+        partial_path(output_path),
+        settings.sync.clone(),
+        settings.step_bytes,
+    )
+    .await?;
 
     let mut stream = response.body;
     while let Some(chunk_result) = stream.next().await {
@@ -157,11 +171,32 @@ pub(crate) async fn stage_download<C: HttpClient>(
             bytes_downloaded: writer.bytes_written(),
             total_bytes: response.content_length,
         });
+
+        // Each step sync covers the bytes written since the previous one, so
+        // none of them takes longer than the file system needs for a step.
+        // It runs while the download goes on; the one before it is waited
+        // for first. That wait holds the download up, and is shown once it
+        // turns slow.
+        if writer.sync_due() {
+            if writer.step_sync_running() {
+                with_disk_wait_notice(
+                    writer.await_step_sync(),
+                    context,
+                    &episode.title,
+                    reporter,
+                    settings.slow_after,
+                    WaitNotice::OnlyWhenSlow,
+                )
+                .await?;
+            }
+            writer.start_step_sync().await?;
+        }
     }
 
     // Without syncing, a power loss or a crashed file server could persist
     // the later rename before the data and leave a truncated file under the
-    // final name.
+    // final name. The step syncs cover what was written during the download;
+    // this one waits for the last of them and covers the rest.
     let flushed = writer.finish().await?;
     let finished = with_disk_wait_notice(
         flushed.synced(),
@@ -169,6 +204,7 @@ pub(crate) async fn stage_download<C: HttpClient>(
         &episode.title,
         reporter,
         settings.slow_after,
+        WaitNotice::Always,
     )
     .await?;
 
@@ -474,6 +510,7 @@ mod tests {
                             .recv()
                             .map_err(std::io::Error::other)
                     }),
+                    step_bytes: SYNC_STEP_BYTES,
                     slow_after: Duration::ZERO,
                 },
             ),
@@ -505,6 +542,7 @@ mod tests {
             &NoopReporter,
             &SyncSettings {
                 sync: Arc::new(|_| Err(std::io::Error::from_raw_os_error(libc::EIO))),
+                step_bytes: SYNC_STEP_BYTES,
                 slow_after: DISK_WAIT_SLOW_AFTER,
             },
         )
@@ -517,6 +555,179 @@ mod tests {
             }
             other => panic!("expected FileWriteFailed, got {other:?}"),
         }
+        assert!(dir.path().join("episode.mp3.partial").exists());
+    }
+
+    /// Serves `chunks` chunks of `chunk_len` bytes each as one response
+    struct ChunkedClient {
+        chunks: usize,
+        chunk_len: usize,
+    }
+
+    #[async_trait]
+    impl HttpClient for ChunkedClient {
+        async fn get_bytes(&self, _url: &str) -> Result<Bytes, reqwest::Error> {
+            unreachable!("downloads stream their body")
+        }
+
+        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, reqwest::Error> {
+            let chunk = Bytes::from(vec![b'a'; self.chunk_len]);
+            let body: ByteStream = Box::pin(futures::stream::iter(
+                (0..self.chunks).map(move |_| Ok(chunk.clone())),
+            ));
+            Ok(HttpResponse {
+                status: 200,
+                content_length: Some((self.chunks * self.chunk_len) as u64),
+                body,
+            })
+        }
+    }
+
+    /// 100 bytes in ten chunks
+    fn hundred_bytes() -> ChunkedClient {
+        ChunkedClient {
+            chunks: 10,
+            chunk_len: 10,
+        }
+    }
+
+    /// Settings that sync after every 25 bytes with a sync that records how
+    /// many bytes the partial file held and whether the final name was taken
+    /// at each call, and fails from the call numbered `fail_from` on
+    fn recording_settings(
+        dir: &Path,
+        calls: Arc<std::sync::Mutex<Vec<(u64, bool)>>>,
+        fail_from: usize,
+    ) -> SyncSettings {
+        let partial_path = dir.join("episode.mp3.partial");
+        let output_path = dir.join("episode.mp3");
+        SyncSettings {
+            sync: Arc::new(move |_| {
+                let mut calls = calls.lock().unwrap();
+                calls.push((
+                    std::fs::metadata(&partial_path).unwrap().len(),
+                    output_path.exists(),
+                ));
+                if calls.len() >= fail_from {
+                    Err(std::io::Error::from_raw_os_error(libc::EIO))
+                } else {
+                    Ok(())
+                }
+            }),
+            step_bytes: 25,
+            slow_after: Duration::from_secs(3600),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_download_syncs_after_every_step_and_once_more_at_the_end() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+        let calls = Default::default();
+        let reporter = GateReporter::new(|| {});
+
+        stage_download(
+            &hundred_bytes(),
+            &make_episode(),
+            &output_path,
+            &context(),
+            &reporter,
+            &recording_settings(dir.path(), Arc::clone(&calls), usize::MAX),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            reporter.waits(),
+            ["syncing", "synced"],
+            "only the wait after the last byte is announced"
+        );
+
+        // The steps end after the 3rd, 6th and 9th chunk. A step sync runs
+        // while the download goes on, so the file may already hold more
+        // bytes than the step covers; the last sync sees all of them.
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 4, "three steps and the final sync: {calls:?}");
+        assert!(calls[0].0 >= 30 && calls[1].0 >= 60 && calls[2].0 >= 90);
+        assert_eq!(calls[3].0, 100);
+        assert!(
+            calls.iter().all(|(_, final_name_taken)| !final_name_taken),
+            "no sync may run after the final name is taken: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_download_goes_on_while_a_step_sync_is_held() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+        let (open_gate, closed_gate) = gate();
+        let closed_gate = std::sync::Mutex::new(closed_gate);
+        let held = std::sync::atomic::AtomicBool::new(false);
+        let reporter = GateReporter::new(open_gate);
+        let settings = SyncSettings {
+            // Only the first sync, the first step, waits for the gate.
+            sync: Arc::new(move |_| {
+                if !held.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    closed_gate
+                        .lock()
+                        .unwrap()
+                        .recv()
+                        .map_err(std::io::Error::other)?;
+                }
+                Ok(())
+            }),
+            step_bytes: 25,
+            slow_after: Duration::ZERO,
+        };
+
+        tokio::time::timeout(
+            GATE_TIMEOUT,
+            stage_download(
+                &hundred_bytes(),
+                &make_episode(),
+                &output_path,
+                &context(),
+                &reporter,
+                &settings,
+            ),
+        )
+        .await
+        .expect("the wait for the held step sync never reported itself as slow")
+        .unwrap();
+
+        // The first step is due after 30 bytes and held. The download reads
+        // on and has to wait for that sync only when the second step is due,
+        // after 60 bytes.
+        assert_eq!(reporter.bytes_before_first_wait(), Some(60));
+        let waits = reporter.waits();
+        assert_eq!(
+            waits[..2],
+            ["slow", "synced"],
+            "a step wait is reported once it turns slow, and ends"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_step_sync_fails_the_download_and_the_final_name_stays_free() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+        let calls = Default::default();
+
+        let result = stage_download(
+            &hundred_bytes(),
+            &make_episode(),
+            &output_path,
+            &context(),
+            &NoopReporter,
+            &recording_settings(dir.path(), Arc::clone(&calls), 1),
+        )
+        .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            DownloadError::FileWriteFailed { .. }
+        ));
+        assert!(!output_path.exists());
         assert!(dir.path().join("episode.mp3.partial").exists());
     }
 }

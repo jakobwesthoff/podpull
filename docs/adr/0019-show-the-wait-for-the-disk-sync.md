@@ -22,7 +22,7 @@ During the sync the progress bar stood at 100 % and showed nothing else, which l
 
 **The wait is reported as events.** `DownloadSyncing` marks the start of a wait for the disk, `DownloadSyncSlow` the moment it passes a threshold, and `DownloadSynced` its end, whether the sync succeeded or failed. They go through `ProgressReporter` and `NoopReporter` ignores them, so `--quiet` stays quiet.
 
-**Two waits are covered.** The sync of the audio file after its last byte, and the sync of the episode metadata file. Whatever runs between them, such as the check against identical stored audio, shows the plain episode line.
+**Two waits are announced.** The sync of the audio file after its last byte, and the sync of the episode metadata file. Whatever runs between them, such as the check against identical stored audio, shows the plain episode line. A wait for a sync during the download (ADR 20) is not announced; it is reported only when it passes the threshold.
 
 **The threshold is 30 s.** Local syncs finish in milliseconds and the measured waits on a slow share reach 31 s. After the threshold the bar reads "Slow disk, still writing", and one warning line above the bars says that a slow or network file system is the likely reason. podpull keeps waiting without a time limit.
 
@@ -34,5 +34,5 @@ During the sync the progress bar stood at 100 % and showed nothing else, which l
 
 - A wait for the disk of any length is visible on the episode's line.
 - A sync that never returns keeps the run waiting.
-- Each download reports up to two `DownloadSyncing`/`DownloadSynced` pairs. A download whose audio turns out to be stored already reports one.
-- The slow warning is printed once per slow wait, so a run with several concurrent downloads on a slow share prints several warning lines.
+- Each download reports one `DownloadSyncing`/`DownloadSynced` pair for the last bytes of its audio and one for its metadata. A download whose audio turns out to be stored already reports no metadata pair.
+- The slow warning is printed once per download, so a run with several concurrent downloads on a slow share prints one warning line for each.
