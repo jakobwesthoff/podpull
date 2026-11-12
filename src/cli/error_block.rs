@@ -58,12 +58,16 @@ fn available(columns: usize, indent: usize) -> usize {
     }
 }
 
-/// `text` filled into lines of at most `width` columns; a word wider than
-/// the line stands alone on one
+/// `text` filled into lines of at most `width` columns
+///
+/// A line breaks only at an ASCII space. Every other character stays as it
+/// is, so a name keeps its runs of spaces, a trailing space and a no-break
+/// space: they are part of the name. A word wider than the line stands
+/// alone on one.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut used = 0;
-    for word in text.split_whitespace() {
+    for word in text.split(' ') {
         let columns = console::measure_text_width(word);
         match lines.last_mut() {
             Some(line) if used + 1 + columns <= width => {
@@ -333,5 +337,80 @@ mod tests {
     fn a_sentence_has_a_capital_and_a_full_stop_and_nothing_stays_nothing() {
         assert_eq!(sentence("fetching the feed"), "Fetching the feed.");
         assert_eq!(sentence(""), "");
+    }
+
+    fn lines_with_doing(doing: &str) -> Vec<String> {
+        let block = Block {
+            title: shown::text("Cannot read the feed file"),
+            cause: None,
+            fix: None,
+            doing: shown::text(doing),
+        };
+
+        lines(&block, &env(false, true, true), 80)
+    }
+
+    fn lines_with_cause(cause: &str) -> Vec<String> {
+        lines(&block(Some(cause), None), &env(false, true, true), 80)
+    }
+
+    #[test]
+    fn a_run_of_spaces_in_a_path_survives_in_the_step() {
+        let lines = lines_with_doing("reading the feed file My   Show");
+
+        assert!(
+            lines.contains(&"▌   Reading the feed file My   Show.".to_string()),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_no_break_space_in_a_path_survives_in_the_step() {
+        let lines = lines_with_doing("reading the feed file My\u{00A0}Show");
+
+        assert!(
+            lines.contains(&"▌   Reading the feed file My\u{00A0}Show.".to_string()),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_space_in_a_path_survives_in_the_step() {
+        let lines = lines_with_doing("reading the feed file My Show ");
+
+        assert!(
+            lines.contains(&"▌   Reading the feed file My Show .".to_string()),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_run_of_spaces_in_a_cause_survives() {
+        let lines = lines_with_cause("no such file: My   Show");
+
+        assert!(
+            lines.contains(&"▌   no such file: My   Show".to_string()),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_no_break_space_in_a_cause_survives() {
+        let lines = lines_with_cause("no such file: My\u{00A0}Show");
+
+        assert!(
+            lines.contains(&"▌   no such file: My\u{00A0}Show".to_string()),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_space_in_a_cause_survives() {
+        let lines = lines_with_cause("no such file: My Show ");
+
+        assert!(
+            lines.contains(&"▌   no such file: My Show ".to_string()),
+            "{lines:#?}"
+        );
     }
 }
