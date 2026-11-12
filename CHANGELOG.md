@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-12
+
 ### Changed
 
 - An error that ends the run (unknown feed host, refused connection, timeout, HTTP error status, feed that is not RSS, output folder that cannot be written) is shown as a block with the cause, how to fix it and what podpull was doing, or as an `Error:` line with indented lines on a pipe, instead of the chain of wrapped errors and, with `RUST_BACKTRACE` set, a backtrace
