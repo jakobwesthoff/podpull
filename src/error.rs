@@ -39,7 +39,7 @@ pub enum FeedError {
 /// Errors that can occur during episode downloads
 #[derive(Error, Debug)]
 pub enum DownloadError {
-    #[error("HTTP request failed for {url}: {source}")]
+    #[error("HTTP request failed for {url}")]
     HttpFailed {
         url: String,
         #[source]
@@ -49,7 +49,7 @@ pub enum DownloadError {
     #[error("HTTP error {status} for {url}")]
     HttpStatus { url: String, status: u16 },
 
-    #[error("Failed to create file {path}: {source}")]
+    #[error("Failed to create file {path}")]
     FileCreateFailed {
         path: PathBuf,
         #[source]
@@ -61,21 +61,21 @@ pub enum DownloadError {
     )]
     PartialFileExists { path: PathBuf },
 
-    #[error("Failed to write to file {path}: {source}")]
+    #[error("Failed to write to file {path}")]
     FileWriteFailed {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("Stream error while downloading {url}: {source}")]
+    #[error("Stream error while downloading {url}")]
     StreamFailed {
         url: String,
         #[source]
         source: HttpError,
     },
 
-    #[error("Failed to rename {partial_path} to {final_path}: {source}")]
+    #[error("Failed to rename {partial_path} to {final_path}")]
     RenameFailed {
         partial_path: PathBuf,
         final_path: PathBuf,
@@ -130,7 +130,7 @@ pub enum MetadataError {
         source: std::io::Error,
     },
 
-    #[error("Failed to parse metadata JSON in {path}: {source}")]
+    #[error("Failed to parse metadata JSON in {path}")]
     JsonParse {
         path: PathBuf,
         #[source]

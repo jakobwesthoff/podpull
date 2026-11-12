@@ -31,10 +31,10 @@ pub(super) enum EpisodeError {
     #[error(transparent)]
     Download(#[from] DownloadError),
 
-    #[error("Failed to record the GUID of identical audio: {0}")]
+    #[error("Failed to record the GUID of identical audio")]
     RecordGuid(#[source] MetadataError),
 
-    #[error("Failed to write metadata: {source}{}", leftover_audio_note(.leftover_audio))]
+    #[error("Failed to write metadata{}", leftover_audio_note(.leftover_audio))]
     WriteMetadata {
         #[source]
         source: MetadataError,
@@ -43,7 +43,7 @@ pub(super) enum EpisodeError {
         leftover_audio: Option<(String, std::io::Error)>,
     },
 
-    #[error("File system work failed: {0}")]
+    #[error("File system work failed")]
     Join(#[source] tokio::task::JoinError),
 
     #[error("Download panicked: {0}")]
