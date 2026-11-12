@@ -162,7 +162,7 @@ impl ProgressReporter for IndicatifReporter {
                 self.main_bar.set_message(for_progress(&format!(
                     "{}Fetching feed: {}",
                     self.env.mark(Mark::Globe),
-                    self.env.cyan(feed_source(&url))
+                    self.env.cyan(shown::feed_source(&url))
                 )));
             }
 
@@ -170,7 +170,7 @@ impl ProgressReporter for IndicatifReporter {
                 self.main_bar.set_message(for_progress(&format!(
                     "{}Parsing feed: {}",
                     self.env.mark(Mark::Scroll),
-                    self.env.cyan(feed_source(&source))
+                    self.env.cyan(shown::feed_source(&source))
                 )));
             }
 
@@ -495,16 +495,6 @@ fn episode_message(
         status,
         truncate_title(episode_title, title_width)
     )
-}
-
-/// The source of a feed as a line shows it: a URL as it parses, a file as a
-/// name
-fn feed_source(source: &str) -> Safe {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        shown::url(source)
-    } else {
-        shown::name(source)
-    }
 }
 
 /// `text` as a progress bar can show it

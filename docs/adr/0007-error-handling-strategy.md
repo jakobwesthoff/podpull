@@ -8,6 +8,8 @@ Accepted
 
 Builds on [2. Project structure: library and binary](0002-project-structure-library-and-binary.md)
 
+Amended by [25. Show errors that end the run as a block or as plain lines](0025-show-errors-that-end-the-run-as-a-block-or-as-plain-lines.md)
+
 ## Context
 
 podpull can fail in many ways:

@@ -27,7 +27,7 @@ mod test_server;
 
 pub use cause::root_text;
 pub use damage::{DamageKind, DamageRemedy, DamagedAudio};
-pub use error::{FeedError, MetadataError, StateError, SyncError};
+pub use error::{FeedError, Hint, MetadataError, StateError, SyncError};
 pub use http::{ByteStream, HttpClient, HttpError, HttpErrorKind, HttpResponse, ReqwestClient};
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter};
 pub use reason::{FailureReason, Subject};

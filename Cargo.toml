@@ -15,7 +15,6 @@ categories = ["command-line-utilities", "multimedia"]
 exclude = [".adr-dir", ".github/", "CLAUDE.md", "Justfile", "clippy.toml", "docs/", "todos/"]
 
 [dependencies]
-anyhow = "1.0.104"
 async-trait = "0.1.92"
 bytes = "1.12.1"
 chrono = "0.4.45"

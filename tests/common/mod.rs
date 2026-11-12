@@ -245,3 +245,36 @@ pub fn run_with_stdout_closed(command: &mut Command, after_close: impl FnOnce())
         code: status.code().expect("the child ended without a signal"),
     }
 }
+
+/// A server that answers its one request with `status_line` and `body`,
+/// and the port it listens on
+pub fn serve_status(status_line: &'static str, body: &'static str) -> u16 {
+    use std::io::Write;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free local port exists");
+    let port = listener
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port();
+    thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut head = Vec::new();
+        let mut buffer = [0u8; 512];
+        while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => head.extend_from_slice(&buffer[..read]),
+            }
+        }
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 {status_line}\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        );
+    });
+    port
+}

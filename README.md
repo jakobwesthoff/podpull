@@ -156,6 +156,32 @@ Failed episodes:
   ✗ Episode 41 - connection refused (https://example.com/episode-41.mp3)
 ```
 
+An error that ends the run, such as a host that does not resolve, a feed that answers with an error status or an output folder that cannot be written, is shown with what went wrong, its cause, how to fix it and what podpull was doing, on stderr, with exit code 1. On a terminal that is a block:
+
+```
+ ✖ ERROR
+▌ Cannot reach the feed host feeds.example.com
+▌
+▌ Cause
+▌   failed to lookup address information: nodename nor servname provided, or not known
+▌
+▌ How to fix it
+▌   Check the feed URL for a typo and that this machine is online.
+▌
+▌ What podpull was doing
+▌   Fetching the feed https://feeds.example.com/podcast.xml.
+```
+
+On a pipe or in a log file it is three lines, without the fix:
+
+```
+Error: Cannot reach the feed host feeds.example.com
+  cause: failed to lookup address information: nodename nor servname provided, or not known
+  while fetching the feed https://feeds.example.com/podcast.xml
+```
+
+No chain of causes and no backtrace is printed, also with `RUST_BACKTRACE` set.
+
 Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes and warnings are still listed, on stderr.
 
 When stdout is not a terminal, a pipe or a log file, podpull prints no banner and no emoji. The summary, the lists and the output folder keep their layout and stay on stdout, so a log holds `Sync complete:` and `Failed episodes:` lines it can be searched for. Colour follows the usual variables: `NO_COLOR` switches it off, and `CLICOLOR_FORCE=1` colours a pipe as well, without bringing the banner or the emoji back. On Linux the emoji follow the locale (`LC_ALL`, `LC_CTYPE`, `LANG`); a locale that does not name UTF-8 gets ASCII stand-ins such as `[+]`.

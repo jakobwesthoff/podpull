@@ -141,6 +141,15 @@ pub(crate) fn reason(reason: &FailureReason) -> Safe {
     }
 }
 
+/// The source of a feed: a URL as it parses, a file as a name
+pub(crate) fn feed_source(source: &str) -> Safe {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        url(source)
+    } else {
+        name(source)
+    }
+}
+
 /// A URL as it parses, or as text when it does not parse
 pub(crate) fn url(url: &str) -> Safe {
     match Url::parse(url) {

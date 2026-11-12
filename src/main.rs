@@ -5,7 +5,6 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Parser;
 
 use podpull::{
@@ -15,6 +14,7 @@ use podpull::{
 
 mod cli;
 
+use cli::failure::{Failure, report};
 use cli::messages::{write_problem_lists, write_run_summary};
 use cli::reporter::IndicatifReporter;
 use cli::{Mark, Stream, StreamEnv};
@@ -75,8 +75,34 @@ fn sync_options(args: &Args) -> SyncOptions {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let args = Args::parse();
+
+    let code = match run(&args).await {
+        Ok(code) => code,
+        Err(failure) => {
+            // The bars of the run are gone by now, so nothing draws over
+            // the report. A report that cannot be written has nowhere left
+            // to go.
+            let _ = report(
+                &mut std::io::stderr(),
+                &failure,
+                &args.feed,
+                &args.output_dir,
+                &StreamEnv::detect(Stream::Stderr),
+                console::Term::stderr().size().1 as usize,
+            );
+            1
+        }
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// Sync the feed and print the end of the run; the exit status of a run that
+/// got to its end
+async fn run(args: &Args) -> Result<i32, Failure> {
     let stdout_env = StreamEnv::detect(Stream::Stdout);
     let stderr_env = StreamEnv::detect(Stream::Stderr);
 
@@ -84,12 +110,12 @@ async fn main() -> Result<()> {
     // nothing on a clean run. A pipe gets no banner either.
     if !args.quiet {
         tolerate_a_closed_pipe(write_banner(&mut std::io::stdout(), &stdout_env))
-            .context("write the banner to stdout")?;
+            .map_err(output_failed(Stream::Stdout))?;
     }
 
     let client = ReqwestClient::new();
 
-    let options = sync_options(&args);
+    let options = sync_options(args);
 
     let indicatif;
     let reporter: &dyn ProgressReporter = if args.quiet {
@@ -99,9 +125,7 @@ async fn main() -> Result<()> {
         &indicatif
     };
 
-    let result = sync_podcast(&client, &args.feed, &args.output_dir, &options, reporter)
-        .await
-        .context("Failed to sync podcast")?;
+    let result = sync_podcast(&client, &args.feed, &args.output_dir, &options, reporter).await?;
 
     // Quiet mode suppresses progress, not problems: scripts and cron jobs
     // still see what needs attention, on stderr.
@@ -111,7 +135,7 @@ async fn main() -> Result<()> {
             &mut std::io::stderr(),
             &stderr_env,
         ))
-        .context("write the problem lists to stderr")?;
+        .map_err(output_failed(Stream::Stderr))?;
     } else {
         tolerate_a_closed_pipe(write_run_summary(
             &result,
@@ -119,15 +143,15 @@ async fn main() -> Result<()> {
             &mut std::io::stdout(),
             &stdout_env,
         ))
-        .context("write the summary to stdout")?;
+        .map_err(output_failed(Stream::Stdout))?;
     }
 
-    let code = exit_code(&result);
-    if code != 0 {
-        std::process::exit(code);
-    }
+    Ok(exit_code(&result))
+}
 
-    Ok(())
+/// The failure of a write to `stream`
+fn output_failed(stream: Stream) -> impl Fn(std::io::Error) -> Failure {
+    move |source| Failure::Output { stream, source }
 }
 
 /// The banner on top of a run, for a terminal only
@@ -314,5 +338,19 @@ mod tests {
         assert!(tolerate_a_closed_pipe(closed).is_ok());
         assert!(tolerate_a_closed_pipe(full).is_err());
         assert!(tolerate_a_closed_pipe(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn a_failed_write_is_a_failure_to_write_that_stream() {
+        let failure =
+            output_failed(Stream::Stderr)(std::io::Error::from(std::io::ErrorKind::StorageFull));
+
+        assert!(matches!(
+            failure,
+            Failure::Output {
+                stream: Stream::Stderr,
+                ..
+            }
+        ));
     }
 }

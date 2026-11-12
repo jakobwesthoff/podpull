@@ -5,6 +5,8 @@
 //! The terminal side of the binary: the progress display and the messages
 //! it prints.
 
+pub(crate) mod error_block;
+pub(crate) mod failure;
 pub(crate) mod messages;
 pub(crate) mod reporter;
 pub(crate) mod shown;

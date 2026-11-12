@@ -92,6 +92,8 @@ const DIM: Style = Style::new().dim();
 const BOLD_GREEN: Style = Style::new().bold().green();
 const RED_BOLD: Style = Style::new().red().bold();
 const YELLOW_BOLD: Style = Style::new().yellow().bold();
+const BOLD: Style = Style::new().bold();
+const ERROR_BADGE: Style = Style::new().black().on_red();
 const BOLD_MAGENTA: Style = Style::new().bold().magenta();
 
 /// How one output stream is rendered
@@ -114,6 +116,15 @@ pub(crate) struct StreamEnv {
 pub(crate) enum Stream {
     Stdout,
     Stderr,
+}
+
+impl Display for Stream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Stream::Stdout => "stdout",
+            Stream::Stderr => "stderr",
+        })
+    }
 }
 
 impl StreamEnv {
@@ -201,6 +212,15 @@ impl StreamEnv {
 
     pub(crate) fn yellow_bold(&self, text: impl Display) -> String {
         self.paint(YELLOW_BOLD, text)
+    }
+
+    pub(crate) fn bold(&self, text: impl Display) -> String {
+        self.paint(BOLD, text)
+    }
+
+    /// Black text on the red of an error
+    pub(crate) fn error_badge(&self, text: impl Display) -> String {
+        self.paint(ERROR_BADGE, text)
     }
 
     pub(crate) fn bold_magenta(&self, text: impl Display) -> String {

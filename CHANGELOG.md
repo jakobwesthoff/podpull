@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An error that ends the run (unknown feed host, refused connection, timeout, HTTP error status, feed that is not RSS, output folder that cannot be written) is shown as a block with the cause, how to fix it and what podpull was doing, or as an `Error:` line with indented lines on a pipe, instead of the chain of wrapped errors and, with `RUST_BACKTRACE` set, a backtrace
 - When stdout is not a terminal (a pipe or a log file), podpull prints no banner and no emoji; the summary and the lists keep their structure and stay on stdout. `-q` colours its lists on stderr only when stderr is a terminal. Terminals on Linux whose locale is spelled `en_US.utf8` or set through `LC_ALL` now get the emoji
 - Failed downloads, unreadable metadata and unreadable audio name the root cause (`connection refused (https://example.com/ep.mp3)`) instead of the chain of wrapped errors; a malformed feed URL is reported as such before any request is made
 
