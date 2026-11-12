@@ -10,6 +10,8 @@ Amends [14. Partial download protection](0014-partial-download-protection.md)
 
 Amends [11. Progress reporting trait abstraction](0011-progress-reporting-trait-abstraction.md)
 
+Amended by [20. Sync a download in bounded steps](0020-sync-a-download-in-bounded-steps.md)
+
 ## Context
 
 A file is synced to disk before it is renamed (ADR 17). On a network share the sync takes as long as the server needs to receive the data. Measured on an SMB share mounted on macOS: a write of 100 MiB returns after 6.5 ms because the client caches it, and the `fsync` that follows took 75.5 s, about 1.4 MB/s. In a sync run of three episodes the waits after the last byte were 31 s, 17 s and 1 s. On a local APFS disk the same sync took 16 ms.
