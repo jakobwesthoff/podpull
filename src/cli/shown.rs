@@ -131,14 +131,23 @@ pub(crate) fn text(text: &str) -> Safe {
 }
 
 /// The reason of a failure: its root as text, then what the failing step was
-/// about in parentheses, shown by the rule for its kind
+/// about in parentheses, shown by the rule for its kind, then an audio file
+/// that could not be removed, shown as a name
 pub(crate) fn reason(reason: &FailureReason) -> Safe {
-    let root = escape_controls(&reason.root);
+    let mut shown = escape_controls(&reason.root);
     match &reason.subject {
-        Subject::Url(subject) => Safe(format!("{root} ({})", url(subject))),
-        Subject::Path(subject) => Safe(format!("{root} ({})", path(subject))),
-        Subject::None => Safe(root),
+        Subject::Url(subject) => shown.push_str(&format!(" ({})", url(subject))),
+        Subject::Path(subject) => shown.push_str(&format!(" ({})", path(subject))),
+        Subject::None => {}
     }
+    if let Some(leftover) = &reason.leftover_audio {
+        shown.push_str(&format!(
+            "; the audio file {} could not be removed: {}",
+            name(&leftover.audio_filename),
+            escape_controls(&leftover.reason)
+        ));
+    }
+    Safe(shown)
 }
 
 /// The source of a feed: a URL as it parses, a file as a name
@@ -255,6 +264,21 @@ mod tests {
         assert_eq!(
             super::reason(&reason).as_str(),
             "permission denied (/podcasts/a%0A100%25.mp3)"
+        );
+    }
+
+    #[test]
+    fn a_reason_shows_the_audio_file_that_could_not_be_removed_by_the_rule_for_names() {
+        let reason = FailureReason::new(
+            "could not write the metadata: disk full",
+            Subject::Path(PathBuf::from("/podcasts/a.json")),
+        )
+        .with_leftover_audio("100%\u{1b}.mp3", "busy\u{7}");
+
+        assert_eq!(
+            super::reason(&reason).as_str(),
+            "could not write the metadata: disk full (/podcasts/a.json); the audio file \
+             100%25%1B.mp3 could not be removed: busy%07"
         );
     }
 

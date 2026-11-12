@@ -361,10 +361,7 @@ mod tests {
     use std::io::{Error as IoError, ErrorKind};
 
     fn reason(root: &str, subject: Subject) -> FailureReason {
-        FailureReason {
-            root: root.to_string(),
-            subject,
-        }
+        FailureReason::new(root, subject)
     }
 
     #[test]

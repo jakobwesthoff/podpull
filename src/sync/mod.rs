@@ -1713,12 +1713,11 @@ mod tests {
 
         assert_eq!(
             error.reason(),
-            FailureReason {
-                root: "could not write the metadata: disk full; the audio file a.mp3 could not \
-                       be removed: busy"
-                    .to_string(),
-                subject: Subject::Path(PathBuf::from("/podcasts/a.json")),
-            }
+            FailureReason::new(
+                "could not write the metadata: disk full",
+                Subject::Path(PathBuf::from("/podcasts/a.json"))
+            )
+            .with_leftover_audio("a.mp3", "busy")
         );
     }
 
@@ -1779,10 +1778,7 @@ mod tests {
 
         assert_eq!(
             result.failed_episodes[0].reason,
-            FailureReason {
-                root: "connection refused".to_string(),
-                subject: Subject::Url(url),
-            }
+            FailureReason::new("connection refused".to_string(), Subject::Url(url))
         );
     }
 
@@ -1797,10 +1793,7 @@ mod tests {
 
         assert_eq!(
             result.failed_episodes[0].reason,
-            FailureReason {
-                root: "HTTP error 503".to_string(),
-                subject: Subject::Url(url),
-            }
+            FailureReason::new("HTTP error 503".to_string(), Subject::Url(url))
         );
         server.finish();
     }

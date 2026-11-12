@@ -70,15 +70,16 @@ impl EpisodeError {
                 leftover_audio,
             } => {
                 let inner = source.reason();
-                let mut root = format!("could not write the metadata: {}", inner.root);
-                if let Some((audio_filename, remove_error)) = leftover_audio {
-                    root.push_str(&format!(
-                        "; the audio file {} could not be removed: {}",
-                        audio_filename,
-                        root_text(remove_error)
-                    ));
+                let reason = FailureReason::new(
+                    format!("could not write the metadata: {}", inner.root),
+                    inner.subject,
+                );
+                match leftover_audio {
+                    Some((audio_filename, remove_error)) => {
+                        reason.with_leftover_audio(audio_filename, root_text(remove_error))
+                    }
+                    None => reason,
                 }
-                FailureReason::new(root, inner.subject)
             }
             EpisodeError::Join(error) => FailureReason::new(
                 format!("file system work failed: {}", root_text(error)),

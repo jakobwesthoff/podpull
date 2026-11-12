@@ -30,7 +30,7 @@ pub use damage::{DamageKind, DamageRemedy, DamagedAudio};
 pub use error::{FeedError, Hint, MetadataError, StateError, SyncError};
 pub use http::{ByteStream, HttpClient, HttpError, HttpErrorKind, HttpResponse, ReqwestClient};
 pub use progress::{NoopReporter, ProgressEvent, ProgressReporter};
-pub use reason::{FailureReason, Subject};
+pub use reason::{FailureReason, LeftoverAudio, Subject};
 pub use state::UnreadableMetadata;
 pub use sync::{
     AudioCheck, FailedEpisode, SyncOptions, SyncResult, UnverifiableAudio, sync_podcast,
