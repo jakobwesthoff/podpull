@@ -2,11 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+mod disk_wait;
 mod download;
 mod filename;
 mod hash;
+#[cfg(test)]
+mod test_support;
 
-pub(crate) use download::{DISK_WAIT_SLOW_AFTER, with_disk_wait_notice};
+pub(crate) use disk_wait::{DISK_WAIT_SLOW_AFTER, with_disk_wait_notice};
 pub use download::{DownloadContext, stage_download};
 pub use filename::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
