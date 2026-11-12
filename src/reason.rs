@@ -26,6 +26,13 @@ pub struct FailureReason {
 }
 
 impl FailureReason {
+    pub fn new(root: impl Into<String>, subject: Subject) -> Self {
+        Self {
+            root: root.into(),
+            subject,
+        }
+    }
+
     /// A reason that is a complete sentence of its own
     pub fn without_subject(root: impl Into<String>) -> Self {
         Self {

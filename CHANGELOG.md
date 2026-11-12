@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Failed downloads, unreadable metadata and unreadable audio name the root cause (`connection refused (https://example.com/ep.mp3)`) instead of the chain of wrapped errors; a malformed feed URL is reported as such before any request is made
+
 ### Fixed
 
 - Control and bidirectional characters in episode titles, file names and other text from the feed or the disk are shown escaped (`%` and the hex of their bytes, a `%` as `%25`), so they cannot flip or forge a line; file names on disk do not change

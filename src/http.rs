@@ -67,6 +67,18 @@ impl HttpError {
     }
 }
 
+/// `text`, the text of `error`, without the URL that a request error from
+/// reqwest names at its end
+pub(crate) fn without_request_url(error: &(dyn Error + 'static), text: String) -> String {
+    if let Some(request) = error.downcast_ref::<reqwest::Error>()
+        && let Some(url) = request.url()
+        && let Some(stripped) = text.strip_suffix(&format!(" for url ({url})"))
+    {
+        return stripped.to_string();
+    }
+    text
+}
+
 /// What a failed request is known to be, as plain values
 ///
 /// Kept apart from `reqwest::Error`, which cannot be built outside reqwest,

@@ -52,7 +52,7 @@ fn no_color_leaves_no_escape_sequence() {
 #[test]
 fn a_quiet_run_prints_the_problem_lists_on_stderr_only() {
     let directory = tempfile::tempdir().unwrap();
-    let feed = common::write_feed_with_unreachable_episode(directory.path(), "Episode 1");
+    let (feed, _) = common::write_feed_with_unreachable_episode(directory.path(), "Episode 1");
 
     let run = run(podpull_command()
         .arg("--quiet")
@@ -68,7 +68,7 @@ fn a_quiet_run_prints_the_problem_lists_on_stderr_only() {
 #[test]
 fn a_hostile_title_from_the_feed_is_shown_escaped() {
     let directory = tempfile::tempdir().unwrap();
-    let feed = common::write_feed_with_unreachable_episode(
+    let (feed, _) = common::write_feed_with_unreachable_episode(
         directory.path(),
         "Episode 42: \u{202E}3pm.evil 100%",
     );
@@ -83,4 +83,22 @@ fn a_hostile_title_from_the_feed_is_shown_escaped() {
     );
     assert!(!run.stdout.contains('\u{202E}'), "{run:?}");
     assert!(!run.stderr.contains('\u{202E}'), "{run:?}");
+}
+
+#[test]
+fn a_failed_download_shows_the_root_cause_and_the_url() {
+    let directory = tempfile::tempdir().unwrap();
+    let (feed, audio_url) =
+        common::write_feed_with_unreachable_episode(directory.path(), "Episode 1");
+
+    let run = run(podpull_command()
+        .arg(&feed)
+        .arg(directory.path().join("out")));
+
+    assert!(
+        run.stdout
+            .contains(&format!("Episode 1 - connection refused ({audio_url})")),
+        "{run:?}"
+    );
+    assert!(!run.stdout.contains("error sending request"), "{run:?}");
 }

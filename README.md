@@ -151,9 +151,9 @@ When individual episodes fail to download (network errors, 404s, etc.), podpull 
 🎉 Sync complete: 47 downloaded, 120 existing, 3 failed
 
 Failed episodes:
-  ✗ Episode 23 - HTTP error 503 for https://example.com/episode-23.mp3
-  ✗ Episode 38 - HTTP error 404 for https://example.com/episode-38.mp3
-  ✗ Episode 41 - HTTP error 404 for https://example.com/episode-41.mp3
+  ✗ Episode 23 - HTTP error 503 (https://example.com/episode-23.mp3)
+  ✗ Episode 38 - HTTP error 404 (https://example.com/episode-38.mp3)
+  ✗ Episode 41 - connection refused (https://example.com/episode-41.mp3)
 ```
 
 Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes and warnings are still listed, on stderr.

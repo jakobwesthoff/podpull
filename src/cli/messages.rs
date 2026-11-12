@@ -98,14 +98,14 @@ pub(crate) fn stuck_partial_file_message(path: &Safe) -> String {
     )
 }
 
-pub(crate) fn unreadable_metadata_message(path: &Safe, error: &Safe) -> String {
-    format!("Could not read episode metadata {} ({})", path, error)
+pub(crate) fn unreadable_metadata_message(path: &Safe, reason: &Safe) -> String {
+    format!("Could not read episode metadata {}: {}", path, reason)
 }
 
-pub(crate) fn unverifiable_audio_message(audio_filename: &Safe, error: &Safe) -> String {
+pub(crate) fn unverifiable_audio_message(audio_filename: &Safe, reason: &Safe) -> String {
     format!(
-        "Could not read {} to check it against its recorded hash ({})",
-        audio_filename, error
+        "Could not read {} to check it against its recorded hash: {}",
+        audio_filename, reason
     )
 }
 
@@ -159,7 +159,7 @@ pub(crate) fn write_problem_lists(
                 "  {}{} - {}",
                 env.mark(Mark::Cross),
                 env.yellow(shown::name(&failed.title)),
-                env.dim(shown::text(&failed.reason.root))
+                env.dim(shown::reason(&failed.reason))
             )?;
         }
     }
@@ -285,8 +285,8 @@ mod tests {
                 &shown::path(Path::new("/podcasts/2024-01-15-Episode.json")),
                 &t("EOF while parsing a string at line 1 column 15")
             ),
-            "Could not read episode metadata /podcasts/2024-01-15-Episode.json \
-             (EOF while parsing a string at line 1 column 15)"
+            "Could not read episode metadata /podcasts/2024-01-15-Episode.json: \
+             EOF while parsing a string at line 1 column 15"
         );
     }
 
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(
             unverifiable_audio_message(&n("2024-12-19-Sega Nomad.mp3"), &t("Permission denied")),
             "Could not read 2024-12-19-Sega Nomad.mp3 to check it against its \
-             recorded hash (Permission denied)"
+             recorded hash: Permission denied"
         );
     }
 

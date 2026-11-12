@@ -341,7 +341,7 @@ impl ProgressReporter for IndicatifReporter {
                         &shown::name(&episode_title),
                         title_width.max(MIN_TITLE_WIDTH)
                     )),
-                    self.env.red(shown::text(&reason.root))
+                    self.env.red(shown::reason(&reason))
                 )));
                 self.finish_bar(download_id);
             }
@@ -867,8 +867,8 @@ mod tests {
         assert_eq!(
             terminal.lines(),
             vec![
-                "[!] Could not read episode metadata Retro-Talk/Old Episode.json (key must be a \
-                 string)"
+                "[!] Could not read episode metadata Retro-Talk/Old Episode.json: key must be a \
+                 string"
             ]
         );
     }

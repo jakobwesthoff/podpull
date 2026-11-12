@@ -9,6 +9,7 @@
 // This lint reports a type a frontend can reach but not name.
 #![warn(unnameable_types)]
 
+mod cause;
 mod damage;
 mod episode;
 mod error;

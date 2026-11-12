@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use futures::{FutureExt, StreamExt};
 
 use super::{FailedEpisode, SyncOptions};
+use crate::cause::root_text;
 use crate::episode::{
     DISK_WAIT_SLOW_AFTER, DownloadContext, SyncSettings, WaitNotice, filename_claim_key, hash_file,
     stage_download, with_disk_wait_notice,
@@ -18,7 +19,7 @@ use crate::error::{DownloadError, MetadataError};
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
 use crate::progress::{ProgressEvent, ProgressReporter};
-use crate::reason::FailureReason;
+use crate::reason::{FailureReason, Subject};
 use crate::state::{OutputState, PlannedDownload, Purpose, StoredEpisode};
 
 /// Why the download of one episode failed
@@ -47,6 +48,47 @@ pub(super) enum EpisodeError {
 
     #[error("Download panicked: {0}")]
     Panicked(String),
+}
+
+impl EpisodeError {
+    /// Why the download of the episode failed, for its display
+    pub(super) fn reason(&self) -> FailureReason {
+        match self {
+            EpisodeError::Download(error) => error.reason(),
+            EpisodeError::RecordGuid(error) => {
+                let inner = error.reason();
+                FailureReason::new(
+                    format!(
+                        "could not record the GUID of identical audio: {}",
+                        inner.root
+                    ),
+                    inner.subject,
+                )
+            }
+            EpisodeError::WriteMetadata {
+                source,
+                leftover_audio,
+            } => {
+                let inner = source.reason();
+                let mut root = format!("could not write the metadata: {}", inner.root);
+                if let Some((audio_filename, remove_error)) = leftover_audio {
+                    root.push_str(&format!(
+                        "; the audio file {} could not be removed: {}",
+                        audio_filename,
+                        root_text(remove_error)
+                    ));
+                }
+                FailureReason::new(root, inner.subject)
+            }
+            EpisodeError::Join(error) => FailureReason::new(
+                format!("file system work failed: {}", root_text(error)),
+                Subject::None,
+            ),
+            EpisodeError::Panicked(message) => {
+                FailureReason::new(format!("download panicked: {message}"), Subject::None)
+            }
+        }
+    }
 }
 
 /// The sentence part that names an audio file the failure could not remove
@@ -167,7 +209,7 @@ pub(super) async fn download_all<C: HttpClient>(
                         Ok(Err(error)) => error,
                         Err(panic) => EpisodeError::Panicked(panic_message(&*panic).to_string()),
                     };
-                    let reason = FailureReason::without_subject(error.to_string());
+                    let reason = error.reason();
                     // Every started download ends with an event a reporter
                     // can close its display for this slot on. The reporter
                     // may be what failed, so a second panic is contained.

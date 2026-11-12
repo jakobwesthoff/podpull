@@ -218,6 +218,10 @@ async fn load_podcast<C: HttpClient>(
     reporter: &dyn ProgressReporter,
 ) -> Result<Podcast, SyncError> {
     if is_url(feed_source) {
+        // A URL that cannot be parsed is reported as that, before any
+        // request is made for it.
+        let feed_url =
+            Url::parse(feed_source).map_err(|e| SyncError::Feed(FeedError::InvalidUrl(e)))?;
         reporter.report(ProgressEvent::FetchingFeed {
             url: feed_source.to_string(),
         });
@@ -226,8 +230,6 @@ async fn load_podcast<C: HttpClient>(
         reporter.report(ProgressEvent::ParsingFeed {
             source: feed_source.to_string(),
         });
-        let feed_url =
-            Url::parse(feed_source).map_err(|e| SyncError::Feed(FeedError::InvalidUrl(e)))?;
         Ok(parse_feed(&bytes, feed_url)?)
     } else {
         // A local file has no fetching phase.
@@ -247,6 +249,7 @@ mod tests {
     use crate::damage::{DamageKind, DamageRemedy};
     use crate::episode::{DownloadContext, hash_file};
     use crate::metadata::write_episode_metadata;
+    use crate::reason::Subject;
     use crate::state::{OutputState, PlannedDownload, Purpose};
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -1038,6 +1041,7 @@ mod tests {
             result.unverifiable_audio[0].audio_filename,
             format!("{}.mp3", NOMAD_STEM)
         );
+        assert_eq!(result.unverifiable_audio[0].reason, "is a directory");
         assert!(events.iter().any(|event| matches!(
             event,
             ProgressEvent::StoredAudioUnverifiable { audio_filename, .. }
@@ -1475,6 +1479,58 @@ mod tests {
     }
 
     // =========================================================
+    // A feed URL that is none
+    // =========================================================
+
+    /// Counts the requests it is asked for
+    #[derive(Default)]
+    struct CountingClient {
+        requests: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl HttpClient for CountingClient {
+        async fn get_bytes(&self, _url: &str) -> Result<Bytes, HttpError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(HttpError::new(
+                crate::http::HttpErrorKind::Other,
+                "no network",
+            ))
+        }
+
+        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, HttpError> {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(HttpError::new(
+                crate::http::HttpErrorKind::Other,
+                "no network",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invalid_feed_url_fails_before_any_request() {
+        let dir = tempdir().unwrap();
+        let client = CountingClient::default();
+
+        let result = sync_podcast(
+            &client,
+            "http://",
+            dir.path(),
+            &SyncOptions::default(),
+            &NoopReporter,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(SyncError::Feed(FeedError::InvalidUrl(_)))),
+            "{result:?}"
+        );
+        assert_eq!(client.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    // =========================================================
     // The status of the feed
     // =========================================================
 
@@ -1540,7 +1596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_failure_text_of_a_guid_that_cannot_be_recorded() {
+    async fn the_reason_of_a_guid_that_cannot_be_recorded() {
         let dir = tempdir().unwrap();
         let mut planned = planned_nomad(Purpose::NewEpisode {
             replaced_candidates: vec![stored_without_metadata()],
@@ -1563,38 +1619,49 @@ mod tests {
         .await
         .err()
         .expect("the stored metadata does not exist")
-        .to_string();
+        .reason();
 
         assert!(
-            error.starts_with("Failed to record the GUID of identical audio: "),
-            "{error}"
+            error
+                .root
+                .starts_with("could not record the GUID of identical audio: "),
+            "{error:?}"
         );
+        assert_eq!(error.subject, Subject::Path(dir.path().join("stored.json")));
     }
 
     #[tokio::test]
-    async fn the_failure_text_of_a_failed_metadata_write() {
+    async fn the_reason_of_a_failed_metadata_write() {
         let dir = tempdir().unwrap();
         block_metadata_path(dir.path());
 
         let error = download_one(dir.path(), &planned_nomad(new_episode()))
             .await
             .unwrap_err()
-            .to_string();
+            .reason();
 
         assert!(
-            error.starts_with("Failed to write metadata: Failed to write metadata file "),
-            "{error}"
+            error.root.starts_with("could not write the metadata: "),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.subject,
+            Subject::Path(dir.path().join(format!("{}.json", NOMAD_STEM)))
         );
     }
 
     #[tokio::test]
-    async fn the_failure_text_of_a_blocking_task_that_panics() {
+    async fn the_reason_of_a_blocking_task_that_panics() {
         let error = downloads::blocking(|| -> () { panic!("boom") })
             .await
             .unwrap_err()
-            .to_string();
+            .reason();
 
-        assert!(error.starts_with("File system work failed: "), "{error}");
+        assert!(
+            error.root.starts_with("file system work failed: "),
+            "{error:?}"
+        );
+        assert_eq!(error.subject, Subject::None);
     }
 
     /// A reporter that panics when a download starts
@@ -1609,7 +1676,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_failure_text_of_a_download_that_panics() {
+    async fn the_reason_of_a_download_that_panics() {
         let dir = tempdir().unwrap();
         let options = SyncOptions {
             limit: None,
@@ -1630,25 +1697,112 @@ mod tests {
         assert_eq!(totals.failed_episodes.len(), 1);
         assert_eq!(
             totals.failed_episodes[0].reason.root,
-            "Download panicked: boom"
+            "download panicked: boom"
         );
     }
 
     #[test]
-    fn the_failure_text_names_an_audio_file_that_cannot_be_removed() {
+    fn the_reason_names_an_audio_file_that_cannot_be_removed() {
         let error = downloads::EpisodeError::WriteMetadata {
             source: crate::error::MetadataError::Write {
                 path: PathBuf::from("/podcasts/a.json"),
                 source: std::io::Error::other("disk full"),
             },
-            leftover_audio: Some(("a.mp3".to_string(), std::io::Error::other("busy"))),
+            leftover_audio: Some(("a.mp3".to_string(), std::io::Error::other("Busy"))),
         };
 
         assert_eq!(
-            error.to_string(),
-            "Failed to write metadata: Failed to write metadata file /podcasts/a.json: \
-             disk full; the audio file a.mp3 could not be removed: busy"
+            error.reason(),
+            FailureReason {
+                root: "could not write the metadata: disk full; the audio file a.mp3 could not \
+                       be removed: busy"
+                    .to_string(),
+                subject: Subject::Path(PathBuf::from("/podcasts/a.json")),
+            }
         );
+    }
+
+    #[test]
+    fn the_reason_of_a_download_error_is_its_own() {
+        let download = crate::error::DownloadError::HttpStatus {
+            url: "https://example.com/ep.mp3".to_string(),
+            status: 404,
+        };
+        let expected = download.reason();
+
+        assert_eq!(
+            downloads::EpisodeError::Download(download).reason(),
+            expected
+        );
+    }
+
+    // =========================================================
+    // The reason of a download that fails for real
+    // =========================================================
+
+    /// Sync a feed file with one episode whose audio is at `audio_url`
+    async fn sync_feed_with_audio_at(audio_url: &str) -> SyncResult {
+        let dir = tempdir().unwrap();
+        let feed = dir.path().join("feed.xml");
+        std::fs::write(
+            &feed,
+            format!(
+                "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>Show</title>\
+                 <link>http://example.com/</link><description>d</description>\
+                 <item><title>Episode 1</title><guid>ep1</guid>\
+                 <pubDate>Mon, 09 Nov 2026 10:00:00 +0000</pubDate>\
+                 <enclosure url=\"{audio_url}\" length=\"1\" type=\"audio/mpeg\"/>\
+                 </item></channel></rss>"
+            ),
+        )
+        .unwrap();
+
+        sync_podcast(
+            &crate::http::ReqwestClient::without_proxy(),
+            feed.to_str().unwrap(),
+            &dir.path().join("out"),
+            &SyncOptions::default(),
+            &NoopReporter,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_reason_of_a_refused_download_is_the_refusal_and_the_url() {
+        let url = format!(
+            "http://127.0.0.1:{}/ep1.mp3",
+            crate::test_server::closed_port()
+        );
+
+        let result = sync_feed_with_audio_at(&url).await;
+
+        assert_eq!(
+            result.failed_episodes[0].reason,
+            FailureReason {
+                root: "connection refused".to_string(),
+                subject: Subject::Url(url),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reason_of_a_download_with_an_error_status_is_the_status_and_the_url() {
+        let server = crate::test_server::serve_once(
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n".to_vec(),
+        );
+        let url = format!("http://127.0.0.1:{}/ep1.mp3", server.port());
+
+        let result = sync_feed_with_audio_at(&url).await;
+
+        assert_eq!(
+            result.failed_episodes[0].reason,
+            FailureReason {
+                root: "HTTP error 503".to_string(),
+                subject: Subject::Url(url),
+            }
+        );
+        server.finish();
     }
 
     // =========================================================

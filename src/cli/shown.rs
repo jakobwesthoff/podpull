@@ -23,6 +23,7 @@
 use std::fmt;
 use std::path::Path;
 
+use podpull::{FailureReason, Subject};
 use url::Url;
 
 /// Text that is safe to put in a line: it holds no character of the
@@ -129,6 +130,17 @@ pub(crate) fn text(text: &str) -> Safe {
     Safe(escape_controls(text))
 }
 
+/// The reason of a failure: its root as text, then what the failing step was
+/// about in parentheses, shown by the rule for its kind
+pub(crate) fn reason(reason: &FailureReason) -> Safe {
+    let root = escape_controls(&reason.root);
+    match &reason.subject {
+        Subject::Url(subject) => Safe(format!("{root} ({})", url(subject))),
+        Subject::Path(subject) => Safe(format!("{root} ({})", path(subject))),
+        Subject::None => Safe(root),
+    }
+}
+
 /// A URL as it parses, or as text when it does not parse
 pub(crate) fn url(url: &str) -> Safe {
     match Url::parse(url) {
@@ -159,6 +171,7 @@ fn escape_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn a_name_shows_control_characters_as_percent_and_hex() {
@@ -208,6 +221,39 @@ mod tests {
             url("https://cdn.example.com/My%20Show/a b.mp3").as_str(),
             "https://cdn.example.com/My%20Show/a%20b.mp3"
         );
+    }
+
+    #[test]
+    fn a_reason_shows_its_url_subject_in_parentheses() {
+        let reason = FailureReason::new(
+            "connection refused",
+            Subject::Url("http://127.0.0.1:9/My%20Show/ep2.mp3".to_string()),
+        );
+
+        assert_eq!(
+            super::reason(&reason).as_str(),
+            "connection refused (http://127.0.0.1:9/My%20Show/ep2.mp3)"
+        );
+    }
+
+    #[test]
+    fn a_reason_shows_its_path_subject_escaped_in_parentheses() {
+        let reason = FailureReason::new(
+            "permission denied",
+            Subject::Path(PathBuf::from("/podcasts/a\n100%.mp3")),
+        );
+
+        assert_eq!(
+            super::reason(&reason).as_str(),
+            "permission denied (/podcasts/a%0A100%25.mp3)"
+        );
+    }
+
+    #[test]
+    fn a_reason_without_a_subject_is_its_root_escaped() {
+        let reason = FailureReason::without_subject("refused\u{1b}[2J");
+
+        assert_eq!(super::reason(&reason).as_str(), "refused%1B[2J");
     }
 
     #[test]

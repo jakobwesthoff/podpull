@@ -402,7 +402,7 @@ pub fn scan_output_dir(
             }
             Err(error) => unreadable_metadata.push(UnreadableMetadata {
                 path,
-                reason: error.to_string(),
+                reason: crate::cause::root_text(&error),
             }),
         }
 
@@ -871,7 +871,10 @@ mod tests {
             .map(|unreadable| &unreadable.path)
             .collect();
         assert_eq!(unreadable, vec![&dir.path().join("truncated.json")]);
-        assert!(state.unreadable_metadata()[0].reason.contains("EOF"));
+        assert_eq!(
+            state.unreadable_metadata()[0].reason,
+            "EOF while parsing a string at line 1 column 16"
+        );
         assert!(
             state
                 .stored_episodes_with_guid("readable-guid")
