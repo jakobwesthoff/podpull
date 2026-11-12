@@ -112,7 +112,13 @@ impl IndicatifReporter {
                 status,
                 &shown::name(episode_title),
                 &self.env,
+                self.columns(),
             )));
+    }
+
+    /// The columns of the terminal the bars are drawn on, which is stderr
+    fn columns(&self) -> usize {
+        console::Term::stderr().size().1 as usize
     }
 
     /// Print a warning line above the bars
@@ -316,7 +322,7 @@ impl ProgressReporter for IndicatifReporter {
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_position(bytes_downloaded);
                 // No index displayed, so use 0 for index_width calculation
-                let title_width = available_title_width(0);
+                let title_width = available_title_width(self.columns(), 0);
                 bar.set_message(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Success),
@@ -333,7 +339,7 @@ impl ProgressReporter for IndicatifReporter {
             } => {
                 let bar = self.get_or_create_bar(download_id);
                 // Reserve space for " - " and some error text (at least 30 chars)
-                let title_width = available_title_width(0).saturating_sub(3 + 30);
+                let title_width = available_title_width(self.columns(), 0).saturating_sub(3 + 30);
                 bar.abandon_with_message(for_progress(&format!(
                     "{}{} - {}",
                     self.env.mark(Mark::Failure),
@@ -476,9 +482,10 @@ fn episode_message(
     status: &str,
     episode_title: &Safe,
     env: &StreamEnv,
+    columns: usize,
 ) -> String {
     let index_width = (episode_index + 1).to_string().len() + total_to_download.to_string().len();
-    let title_width = available_title_width(index_width)
+    let title_width = available_title_width(columns, index_width)
         .saturating_sub(status.len())
         .max(MIN_TITLE_WIDTH);
     format!(
@@ -525,9 +532,7 @@ fn truncate_title(title: &Safe, max_len: usize) -> String {
 
 /// Calculate available width for episode title in progress bar
 /// Layout: "  📥 [{bar:30}] XX.XX MiB/XX.XX MiB [idx/total] title"
-fn available_title_width(index_width: usize) -> usize {
-    let term_width = console::Term::stdout().size().1 as usize;
-
+fn available_title_width(term_width: usize, index_width: usize) -> usize {
     // Fixed parts:
     // - "  " prefix: 2
     // - emoji + space: 4 (📥 + space, accounting for unicode width)
@@ -551,6 +556,7 @@ mod tests {
     const PLAIN: StreamEnv = StreamEnv {
         color: false,
         utf8: true,
+        rich: true,
     };
     use std::path::PathBuf;
 
@@ -603,15 +609,22 @@ mod tests {
     #[test]
     fn episode_message_puts_the_status_between_the_place_and_the_title() {
         assert_eq!(
-            episode_message(0, 3, "", &shown::name("Sega Nomad"), &PLAIN),
+            episode_message(0, 3, "", &shown::name("Sega Nomad"), &PLAIN, 80),
             "[1/3] Sega Nomad"
         );
         assert_eq!(
-            episode_message(0, 3, SYNCING_STATUS, &shown::name("Sega Nomad"), &PLAIN),
+            episode_message(0, 3, SYNCING_STATUS, &shown::name("Sega Nomad"), &PLAIN, 80),
             "[1/3] Writing to disk: Sega Nomad"
         );
         assert_eq!(
-            episode_message(1, 3, SLOW_SYNC_STATUS, &shown::name("Sega Nomad"), &PLAIN),
+            episode_message(
+                1,
+                3,
+                SLOW_SYNC_STATUS,
+                &shown::name("Sega Nomad"),
+                &PLAIN,
+                80
+            ),
             "[2/3] Slow disk, still writing: Sega Nomad"
         );
     }
@@ -620,7 +633,7 @@ mod tests {
     fn episode_message_cuts_a_long_title_and_keeps_the_status() {
         let title = "x".repeat(500);
 
-        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &shown::name(&title), &PLAIN);
+        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &shown::name(&title), &PLAIN, 80);
 
         assert!(message.starts_with("[1/3] Slow disk, still writing: xxx"));
         assert!(message.ends_with("..."));
@@ -849,6 +862,7 @@ mod tests {
             StreamEnv {
                 color: false,
                 utf8: false,
+                rich: true,
             },
             ProgressDrawTarget::term_like(Box::new(terminal.clone())),
             Box::new(terminal.writer()),
@@ -990,5 +1004,13 @@ mod tests {
                 .join("\n")
                 .contains("https://example.com/My%20Show/feed.xml")
         );
+    }
+
+    #[test]
+    fn the_title_gets_what_the_given_columns_leave_after_the_fixed_parts() {
+        // 2 + 4 + 2 + 30 + 1 + 21 + 1 + index_width + 4 + 1 columns are fixed.
+        assert_eq!(available_title_width(120, 2), 120 - 68);
+        assert_eq!(available_title_width(80, 2), MIN_TITLE_WIDTH);
+        assert_eq!(available_title_width(0, 2), MIN_TITLE_WIDTH);
     }
 }

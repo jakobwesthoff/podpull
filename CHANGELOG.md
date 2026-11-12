@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- When stdout is not a terminal (a pipe or a log file), podpull prints no banner and no emoji; the summary and the lists keep their structure and stay on stdout. `-q` colours its lists on stderr only when stderr is a terminal. Terminals on Linux whose locale is spelled `en_US.utf8` or set through `LC_ALL` now get the emoji
 - Failed downloads, unreadable metadata and unreadable audio name the root cause (`connection refused (https://example.com/ep.mp3)`) instead of the chain of wrapped errors; a malformed feed URL is reported as such before any request is made
 
 ### Fixed
 
+- podpull no longer panics when the reader of its output closes the pipe early (`podpull ... | head`); its exit status stays that of the sync
 - Control and bidirectional characters in episode titles, file names and other text from the feed or the disk are shown escaped (`%` and the hex of their bytes, a `%` as `%25`), so they cannot flip or forge a line; file names on disk do not change
 - A feed that answers with an HTTP error status (4xx, 5xx) ends the run as a failed fetch instead of being parsed as a feed, so an error page that happens to parse as RSS is no longer synced
 - A warning printed while podpull runs (unreadable metadata, a slow disk, damaged audio) and an episode title with an emoji variation selector no longer leave a copy of the progress line behind on the terminal

@@ -12,7 +12,7 @@ pub(crate) mod stream_env;
 #[cfg(test)]
 mod virtual_terminal;
 
-pub(crate) use stream_env::{Mark, StreamEnv};
+pub(crate) use stream_env::{Mark, Stream, StreamEnv};
 
 #[cfg(test)]
 use podpull::{DamageKind, DamageRemedy, DamagedAudio, FailedEpisode, FailureReason, SyncResult};

@@ -207,6 +207,40 @@ pub(crate) fn write_problem_lists(
     Ok(())
 }
 
+/// Write the end of a sync: the summary, the lists of problems and the
+/// output folder
+///
+/// A terminal gets a blank line around it. A pipe gets no blank line at its
+/// start and its end, so a log file holds the lines only.
+pub(crate) fn write_run_summary(
+    result: &SyncResult,
+    output_dir: &std::path::Path,
+    out: &mut impl Write,
+    env: &StreamEnv,
+) -> std::io::Result<()> {
+    if env.rich {
+        writeln!(out)?;
+    }
+    writeln!(
+        out,
+        "{}{} {}",
+        env.mark(Mark::Party),
+        env.bold_green("Sync complete:"),
+        completion_summary(result, env)
+    )?;
+    write_problem_lists(result, out, env)?;
+    writeln!(
+        out,
+        "\n{}Output: {}",
+        env.mark(Mark::Folder),
+        env.cyan(shown::path(output_dir))
+    )?;
+    if env.rich {
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,10 +255,12 @@ mod tests {
     const PLAIN: StreamEnv = StreamEnv {
         color: false,
         utf8: true,
+        rich: true,
     };
     const COLOURED: StreamEnv = StreamEnv {
         color: true,
         utf8: true,
+        rich: true,
     };
     use crate::cli::test_result as result;
     use podpull::UnverifiableAudio;
@@ -613,5 +649,54 @@ mod tests {
             assert!(message.contains(HOSTILE_SHOWN), "{message}");
             assert!(!has_escaped_character(&message), "{message:?}");
         }
+    }
+
+    // =========================================================
+    // The end of a run on a terminal and on a pipe
+    // =========================================================
+
+    const PIPE: StreamEnv = StreamEnv {
+        color: false,
+        utf8: true,
+        rich: false,
+    };
+
+    fn summary_of(result: &SyncResult, env: &StreamEnv) -> String {
+        let mut out = Vec::new();
+        write_run_summary(result, Path::new("/podcasts/show"), &mut out, env).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_terminal_gets_the_summary_with_marks_and_blank_lines_around_it() {
+        assert_eq!(
+            summary_of(&result(1, 1, 0), &PLAIN),
+            "\n🎉 Sync complete: 1 downloaded, 0 existing, 1 failed\n\nFailed episodes:\n  \
+             ✗ Episode 0 - HTTP error 404\n\n📁 Output: /podcasts/show\n\n"
+        );
+    }
+
+    #[test]
+    fn a_pipe_gets_the_summary_without_marks_and_without_blank_lines_around_it() {
+        assert_eq!(
+            summary_of(&result(1, 1, 0), &PIPE),
+            "Sync complete: 1 downloaded, 0 existing, 1 failed\n\nFailed episodes:\n  \
+             Episode 0 - HTTP error 404\n\nOutput: /podcasts/show\n"
+        );
+    }
+
+    #[test]
+    fn a_pipe_gets_the_warnings_without_marks() {
+        let mut warned = result(0, 0, 0);
+        warned.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
+
+        let mut out = Vec::new();
+        write_problem_lists(&warned, &mut out, &PIPE).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\nWarnings:\n  Could not remove the leftover partial file /podcasts/a.mp3.partial; its \
+             episode cannot be downloaded until it is deleted\n"
+        );
     }
 }

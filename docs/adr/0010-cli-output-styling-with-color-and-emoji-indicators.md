@@ -6,6 +6,8 @@ Date: 2026-01-31
 
 Accepted
 
+Amended by [24. Print plain output when a stream is no terminal](0024-print-plain-output-when-a-stream-is-no-terminal.md)
+
 ## Context
 
 Command-line tools need to communicate status and progress effectively to users. Traditional CLI output can be dense and hard to scan quickly. Modern terminals support ANSI color codes and Unicode characters, enabling richer visual feedback.

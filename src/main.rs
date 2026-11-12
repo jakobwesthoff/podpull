@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -14,9 +15,9 @@ use podpull::{
 
 mod cli;
 
-use cli::messages::{completion_summary, write_problem_lists};
+use cli::messages::{write_problem_lists, write_run_summary};
 use cli::reporter::IndicatifReporter;
-use cli::{Mark, StreamEnv};
+use cli::{Mark, Stream, StreamEnv};
 
 /// Download and synchronize podcasts from RSS feeds
 #[derive(Parser, Debug)]
@@ -76,17 +77,14 @@ fn sync_options(args: &Args) -> SyncOptions {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let env = StreamEnv::detect_stdout();
+    let stdout_env = StreamEnv::detect(Stream::Stdout);
+    let stderr_env = StreamEnv::detect(Stream::Stderr);
 
     // Quiet output carries only problems, so a script capturing it sees
-    // nothing on a clean run.
+    // nothing on a clean run. A pipe gets no banner either.
     if !args.quiet {
-        println!(
-            "\n{}{} {}\n",
-            env.mark(Mark::Microphone),
-            env.bold_magenta("podpull"),
-            env.dim("- Podcast Downloader")
-        );
+        tolerate_a_closed_pipe(write_banner(&mut std::io::stdout(), &stdout_env))
+            .context("write the banner to stdout")?;
     }
 
     let client = ReqwestClient::new();
@@ -97,7 +95,7 @@ async fn main() -> Result<()> {
     let reporter: &dyn ProgressReporter = if args.quiet {
         &NoopReporter
     } else {
-        indicatif = IndicatifReporter::new(env);
+        indicatif = IndicatifReporter::new(stderr_env);
         &indicatif
     };
 
@@ -108,22 +106,20 @@ async fn main() -> Result<()> {
     // Quiet mode suppresses progress, not problems: scripts and cron jobs
     // still see what needs attention, on stderr.
     if args.quiet {
-        write_problem_lists(&result, &mut std::io::stderr(), &env)
-            .context("write the problem lists to stderr")?;
+        tolerate_a_closed_pipe(write_problem_lists(
+            &result,
+            &mut std::io::stderr(),
+            &stderr_env,
+        ))
+        .context("write the problem lists to stderr")?;
     } else {
-        println!(
-            "\n{}{} {}",
-            env.mark(Mark::Party),
-            env.bold_green("Sync complete:"),
-            completion_summary(&result, &env)
-        );
-        write_problem_lists(&result, &mut std::io::stdout(), &env)
-            .context("write the problem lists to stdout")?;
-        println!(
-            "\n{}Output: {}\n",
-            env.mark(Mark::Folder),
-            env.cyan(cli::shown::path(&args.output_dir))
-        );
+        tolerate_a_closed_pipe(write_run_summary(
+            &result,
+            &args.output_dir,
+            &mut std::io::stdout(),
+            &stdout_env,
+        ))
+        .context("write the summary to stdout")?;
     }
 
     let code = exit_code(&result);
@@ -132,6 +128,29 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The banner on top of a run, for a terminal only
+fn write_banner(out: &mut impl Write, env: &StreamEnv) -> std::io::Result<()> {
+    if !env.rich {
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "\n{}{} {}\n",
+        env.mark(Mark::Microphone),
+        env.bold_magenta("podpull"),
+        env.dim("- Podcast Downloader")
+    )
+}
+
+/// A reader that closed the pipe has seen what it wanted: that is no error
+/// of the run, whose exit status stays that of the sync
+fn tolerate_a_closed_pipe(written: std::io::Result<()>) -> std::io::Result<()> {
+    match written {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
 }
 
 /// Exit status of a finished sync
@@ -248,5 +267,52 @@ mod tests {
 
         let args = Args::try_parse_from(["podpull", "--repair", "feed.xml", "out"]).unwrap();
         assert!(args.repair);
+    }
+
+    #[test]
+    fn a_terminal_gets_the_banner() {
+        let mut out = Vec::new();
+
+        write_banner(
+            &mut out,
+            &StreamEnv {
+                color: false,
+                utf8: true,
+                rich: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\n🎙\u{fe0f}  podpull - Podcast Downloader\n\n"
+        );
+    }
+
+    #[test]
+    fn a_pipe_gets_no_banner() {
+        let mut out = Vec::new();
+
+        write_banner(
+            &mut out,
+            &StreamEnv {
+                color: false,
+                utf8: true,
+                rich: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out, b"");
+    }
+
+    #[test]
+    fn a_closed_pipe_is_no_error_of_the_run() {
+        let closed = Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        let full = Err(std::io::Error::from(std::io::ErrorKind::StorageFull));
+
+        assert!(tolerate_a_closed_pipe(closed).is_ok());
+        assert!(tolerate_a_closed_pipe(full).is_err());
+        assert!(tolerate_a_closed_pipe(Ok(())).is_ok());
     }
 }

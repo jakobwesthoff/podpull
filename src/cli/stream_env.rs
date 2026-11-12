@@ -67,6 +67,23 @@ impl Mark {
     }
 }
 
+/// Whether the locale names UTF-8: the first of the three variables that is
+/// set and not empty decides, as in POSIX
+pub(crate) fn utf8_locale(
+    lc_all: Option<&str>,
+    lc_ctype: Option<&str>,
+    lang: Option<&str>,
+) -> bool {
+    [lc_all, lc_ctype, lang]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
+}
+
 const GREEN: Style = Style::new().green();
 const YELLOW: Style = Style::new().yellow();
 const RED: Style = Style::new().red();
@@ -87,23 +104,61 @@ pub(crate) struct StreamEnv {
     pub(crate) color: bool,
     /// Unicode symbols may be written
     pub(crate) utf8: bool,
+    /// The stream is a terminal. Only a terminal gets the banner and the
+    /// symbols; a pipe or a log file gets the plain lines.
+    pub(crate) rich: bool,
+}
+
+/// An output stream of the process
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Stdout,
+    Stderr,
 }
 
 impl StreamEnv {
-    pub(crate) fn new(color: bool, utf8: bool) -> StreamEnv {
-        StreamEnv { color, utf8 }
+    pub(crate) fn new(color: bool, utf8: bool, rich: bool) -> StreamEnv {
+        StreamEnv { color, utf8, rich }
     }
 
-    /// The environment of stdout as the process sees it
+    /// The environment of `stream` as the process sees it
     ///
     /// `console` decides the colour: `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`
-    /// and a terminal that supports colour. The symbols follow the rule of
-    /// `console::Emoji`, which is the rule of every symbol podpull has shown
-    /// so far.
-    pub(crate) fn detect_stdout() -> StreamEnv {
-        StreamEnv::new(
-            console::colors_enabled(),
+    /// and a terminal that supports colour. A stream is rich when it is a
+    /// terminal; `CLICOLOR_FORCE` colours a stream that is none, but does not
+    /// make it rich.
+    pub(crate) fn detect(stream: Stream) -> StreamEnv {
+        let (term, color) = match stream {
+            Stream::Stdout => (console::Term::stdout(), console::colors_enabled()),
+            Stream::Stderr => (console::Term::stderr(), console::colors_enabled_stderr()),
+        };
+        let var = |name: &str| std::env::var(name).ok();
+        StreamEnv::from_values(
+            term.features().is_attended(),
+            color,
             Emoji("unicode", "").to_string() == "unicode",
+            var("LC_ALL").as_deref(),
+            var("LC_CTYPE").as_deref(),
+            var("LANG").as_deref(),
+        )
+    }
+
+    /// The environment that the facts about a stream make
+    ///
+    /// The symbols are shown when `console` says its terminal shows them or
+    /// when the locale names UTF-8.
+    pub(crate) fn from_values(
+        attended: bool,
+        color: bool,
+        console_utf8: bool,
+        lc_all: Option<&str>,
+        lc_ctype: Option<&str>,
+        lang: Option<&str>,
+    ) -> StreamEnv {
+        StreamEnv::new(
+            color,
+            console_utf8 || utf8_locale(lc_all, lc_ctype, lang),
+            attended,
         )
     }
 
@@ -152,8 +207,12 @@ impl StreamEnv {
         self.paint(BOLD_MAGENTA, text)
     }
 
-    /// The symbol of `mark`, or its ASCII stand-in
+    /// The symbol of `mark`, its ASCII stand-in, or nothing on a stream
+    /// that is no terminal
     pub(crate) fn mark(&self, mark: Mark) -> &'static str {
+        if !self.rich {
+            return "";
+        }
         let (symbol, stand_in) = mark.symbols();
         if self.utf8 { symbol } else { stand_in }
     }
@@ -166,10 +225,12 @@ mod tests {
     const ON: StreamEnv = StreamEnv {
         color: true,
         utf8: true,
+        rich: true,
     };
     const OFF: StreamEnv = StreamEnv {
         color: false,
         utf8: false,
+        rich: true,
     };
 
     #[test]
@@ -213,8 +274,66 @@ mod tests {
     fn detect_reads_the_environment_of_stdout() {
         // The values depend on where the tests run; the call has to work
         // anywhere.
-        let env = StreamEnv::detect_stdout();
+        let env = StreamEnv::detect(Stream::Stdout);
 
-        assert_eq!(env, StreamEnv::new(env.color, env.utf8));
+        assert_eq!(env, StreamEnv::new(env.color, env.utf8, env.rich));
+    }
+
+    // =========================================================
+    // Pipes, locales and the facts of a stream
+    // =========================================================
+
+    const PIPE: StreamEnv = StreamEnv {
+        color: false,
+        utf8: true,
+        rich: false,
+    };
+
+    #[test]
+    fn a_stream_that_is_no_terminal_gets_no_marks() {
+        for mark in Mark::ALL {
+            assert_eq!(PIPE.mark(mark), "", "{mark:?}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_without_unicode_gets_the_stand_ins() {
+        let terminal = StreamEnv {
+            color: true,
+            utf8: false,
+            rich: true,
+        };
+
+        assert_eq!(terminal.mark(Mark::Globe), "[w] ");
+    }
+
+    #[test]
+    fn the_locale_decides_unicode_by_the_first_variable_that_is_set() {
+        assert!(utf8_locale(Some("C.UTF-8"), None, None));
+        assert!(utf8_locale(None, Some("en_US.utf8"), Some("C")));
+        assert!(utf8_locale(None, None, Some("en_US.UTF-8")));
+        assert!(!utf8_locale(Some("C"), None, Some("en_US.UTF-8")));
+        assert!(utf8_locale(Some(""), None, Some("en_US.UTF-8")));
+        assert!(!utf8_locale(None, None, Some("en_US.ISO-8859-1")));
+        assert!(!utf8_locale(None, None, None));
+    }
+
+    #[test]
+    fn unicode_is_shown_when_console_says_so_or_the_locale_does() {
+        let by_console = StreamEnv::from_values(true, false, true, None, None, Some("C"));
+        let by_locale = StreamEnv::from_values(true, false, false, None, None, Some("en_US.utf8"));
+        let by_neither = StreamEnv::from_values(true, false, false, None, None, Some("C"));
+
+        assert!(by_console.utf8);
+        assert!(by_locale.utf8);
+        assert!(!by_neither.utf8);
+    }
+
+    #[test]
+    fn a_forced_colour_does_not_make_a_stream_rich() {
+        let env = StreamEnv::from_values(false, true, true, None, None, None);
+
+        assert!(env.color);
+        assert!(!env.rich);
     }
 }

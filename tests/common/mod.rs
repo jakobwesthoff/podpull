@@ -155,3 +155,93 @@ pub fn write_feed_with_unreachable_episode(
     .expect("the feed file is written");
     (path, audio_url)
 }
+
+/// A server that answers its one request only after the test lets it
+pub struct GatedServer {
+    port: u16,
+    gate: std::sync::mpsc::Sender<()>,
+}
+
+impl GatedServer {
+    pub fn url(&self, path: &str) -> String {
+        format!("http://127.0.0.1:{}/{path}", self.port)
+    }
+
+    /// Let the server answer
+    pub fn release(&self) {
+        let _ = self.gate.send(());
+    }
+}
+
+/// A server that reads one request, waits for the gate and then answers
+/// with `body` as a 200
+pub fn serve_after_gate(body: &'static str) -> GatedServer {
+    use std::io::Write;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free local port exists");
+    let port = listener
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port();
+    let (gate, opened) = std::sync::mpsc::channel::<()>();
+    thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut head = Vec::new();
+        let mut buffer = [0u8; 512];
+        while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => head.extend_from_slice(&buffer[..read]),
+            }
+        }
+        // The test closes what it reads before it opens the gate.
+        let _ = opened.recv_timeout(DEADLINE);
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        );
+    });
+    GatedServer { port, gate }
+}
+
+/// Run `command` with its stdout closed on the reading side before
+/// `after_close` runs, and return how it ended
+pub fn run_with_stdout_closed(command: &mut Command, after_close: impl FnOnce()) -> Run {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the podpull binary starts");
+    drop(child.stdout.take());
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let stderr_reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+    after_close();
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("the child can be polled") {
+            break status;
+        }
+        if started.elapsed() > DEADLINE {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("podpull did not end in {DEADLINE:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    Run {
+        stdout: String::new(),
+        stderr: stderr_reader.join().expect("the stderr reader ends"),
+        code: status.code().expect("the child ended without a signal"),
+    }
+}
