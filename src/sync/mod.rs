@@ -1475,6 +1475,46 @@ mod tests {
     }
 
     // =========================================================
+    // The status of the feed
+    // =========================================================
+
+    #[tokio::test]
+    async fn sync_fails_on_a_404_feed_instead_of_syncing_its_body() {
+        let dir = tempdir().unwrap();
+        let body = "<rss version=\"2.0\"><channel><title>Show</title></channel></rss>";
+        let server = crate::test_server::serve_once(
+            format!(
+                "HTTP/1.1 404 Not Found\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes(),
+        );
+        let url = format!("http://127.0.0.1:{}/feed.xml", server.port());
+        let options = SyncOptions {
+            limit: None,
+            max_concurrent: 1,
+            audio_check: AudioCheck::Collisions,
+        };
+
+        let result = sync_podcast(
+            &crate::http::ReqwestClient::without_proxy(),
+            &url,
+            dir.path(),
+            &options,
+            &NoopReporter,
+        )
+        .await;
+
+        match result {
+            Err(SyncError::Feed(FeedError::FetchFailed { source, .. })) => {
+                assert_eq!(source.kind(), crate::http::HttpErrorKind::Status(404));
+            }
+            other => panic!("the sync was expected to fail on the feed: {other:?}"),
+        }
+        server.finish();
+    }
+
+    // =========================================================
     // The text of an episode's failure
     // =========================================================
 

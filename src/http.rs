@@ -197,7 +197,16 @@ impl Default for ReqwestClient {
 #[async_trait]
 impl HttpClient for ReqwestClient {
     async fn get_bytes(&self, url: &str) -> Result<Bytes, HttpError> {
-        Ok(self.client.get(url).send().await?.bytes().await?)
+        // A 4xx or 5xx answer is no feed, whatever body it carries. A 3xx
+        // that reqwest does not follow is left as it is.
+        Ok(self
+            .client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?)
     }
 
     async fn get_stream(&self, url: &str) -> Result<HttpResponse, HttpError> {
@@ -224,7 +233,7 @@ impl HttpClient for ReqwestClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_server::{answer_unasked, closed_port, serve_once};
+    use crate::test_server::{answer_unasked, closed_port, serve_each, serve_once};
 
     #[test]
     fn reqwest_client_can_be_created() {
@@ -416,6 +425,66 @@ mod tests {
         let body = ReqwestClient::without_proxy().get_bytes(&url).await;
 
         assert_eq!(body.expect("the server answers").as_ref(), b"hi");
+        server.finish();
+    }
+
+    // =========================================================
+    // The status of a feed
+    // =========================================================
+
+    const FEED: &str = "<rss version=\"2.0\"><channel><title>Show</title></channel></rss>";
+
+    fn response(head: &str, body: &str) -> Vec<u8> {
+        format!("{head}\r\ncontent-length: {}\r\n\r\n{body}", body.len()).into_bytes()
+    }
+
+    #[tokio::test]
+    async fn get_bytes_fails_on_a_404_that_carries_a_feed() {
+        let server = serve_once(response("HTTP/1.1 404 Not Found", FEED));
+        let url = format!("http://127.0.0.1:{}/feed.xml", server.port());
+
+        let kind = kind_of_get(&ReqwestClient::without_proxy(), &url).await;
+
+        assert_eq!(kind, HttpErrorKind::Status(404));
+        server.finish();
+    }
+
+    #[tokio::test]
+    async fn get_bytes_fails_on_a_503() {
+        let server = serve_once(response("HTTP/1.1 503 Service Unavailable", ""));
+        let url = format!("http://127.0.0.1:{}/feed.xml", server.port());
+
+        let kind = kind_of_get(&ReqwestClient::without_proxy(), &url).await;
+
+        assert_eq!(kind, HttpErrorKind::Status(503));
+        server.finish();
+    }
+
+    #[tokio::test]
+    async fn get_bytes_follows_a_redirect_to_the_feed() {
+        let server = serve_each(vec![
+            response("HTTP/1.1 302 Found\r\nlocation: /moved.xml", ""),
+            response("HTTP/1.1 200 OK", FEED),
+        ]);
+        let url = format!("http://127.0.0.1:{}/feed.xml", server.port());
+
+        let body = ReqwestClient::without_proxy().get_bytes(&url).await;
+
+        assert_eq!(
+            body.expect("the redirect is followed").as_ref(),
+            FEED.as_bytes()
+        );
+        server.finish();
+    }
+
+    #[tokio::test]
+    async fn get_bytes_keeps_a_3xx_that_has_nowhere_to_go() {
+        let server = serve_once(response("HTTP/1.1 304 Not Modified", ""));
+        let url = format!("http://127.0.0.1:{}/feed.xml", server.port());
+
+        let body = ReqwestClient::without_proxy().get_bytes(&url).await;
+
+        assert_eq!(body.expect("a 304 is not an error status").as_ref(), b"");
         server.finish();
     }
 

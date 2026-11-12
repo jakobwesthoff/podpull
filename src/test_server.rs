@@ -76,6 +76,29 @@ pub(crate) fn serve_once(response: Vec<u8>) -> Server {
     Server { port, done }
 }
 
+/// Answer one connection after the other with `responses`, in order, and
+/// close each
+pub(crate) fn serve_each(responses: Vec<Vec<u8>>) -> Server {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port exists");
+    let port = listener
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port();
+    let (sender, done) = mpsc::channel();
+    thread::spawn(move || {
+        let mut heads = Vec::new();
+        for response in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            heads.push(read_request_head(&mut stream));
+            let _ = stream.write_all(&response);
+        }
+        let _ = sender.send(heads.join("\n---\n"));
+    });
+    Server { port, done }
+}
+
 /// Send `bytes` as soon as one connection is made, without reading what the
 /// client sent first
 ///
