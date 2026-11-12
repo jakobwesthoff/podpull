@@ -8,6 +8,8 @@ Accepted
 
 Amends [10. CLI output styling with color and emoji indicators](0010-cli-output-styling-with-color-and-emoji-indicators.md)
 
+Amended by [26. List slow writes at the end of the run](0026-list-slow-writes-at-the-end-of-the-run.md)
+
 ## Context
 
 podpull printed its banner and its emoji whether stdout was a terminal, a pipe or a log file, and decided colour by stdout alone, also for text that goes to stderr. A log file held `🎙️  podpull - Podcast Downloader` and a line of emoji in front of every list.

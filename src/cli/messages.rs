@@ -7,6 +7,7 @@ use std::io::Write;
 use podpull::{DamageKind, DamageRemedy, SyncResult};
 
 use super::shown::{self, Safe};
+use super::slow_writes::SlowWrite;
 use super::*;
 
 /// The counts of a finished sync, for its closing line
@@ -91,6 +92,17 @@ pub(crate) fn slow_sync_warning(episode_title: &Safe, threshold: std::time::Dura
     )
 }
 
+/// The line of the end list for a write that turned slow; the write is
+/// over by then, so the line is in the past tense
+pub(crate) fn slow_write_message(episode_title: &Safe, threshold: std::time::Duration) -> String {
+    format!(
+        "Writing \"{}\" to the disk took longer than {} s; a slow or network file system is \
+         the likely reason",
+        episode_title,
+        threshold.as_secs()
+    )
+}
+
 pub(crate) fn stuck_partial_file_message(path: &Safe) -> String {
     format!(
         "Could not remove the leftover partial file {}; its episode cannot be downloaded until it is deleted",
@@ -145,9 +157,11 @@ pub(crate) fn damage_message(
     )
 }
 
-/// Write the failed and damaged episodes of a sync, if there are any
+/// Write the failed and damaged episodes of a sync, its warnings and its
+/// slow writes, if there are any
 pub(crate) fn write_problem_lists(
     result: &SyncResult,
+    slow_writes: &[SlowWrite],
     out: &mut impl Write,
     env: &StreamEnv,
 ) -> std::io::Result<()> {
@@ -204,6 +218,20 @@ pub(crate) fn write_problem_lists(
             writeln!(out, "  {}{}", env.mark(Mark::Warning), warning)?;
         }
     }
+
+    // A slow write is listed apart from the warnings: the episode was
+    // written, and a warning changes the exit status, a slow write does not.
+    if !slow_writes.is_empty() {
+        writeln!(out, "\n{}", env.yellow_bold("Slow writes:"))?;
+        for slow in slow_writes {
+            writeln!(
+                out,
+                "  {}{}",
+                env.mark(Mark::Warning),
+                slow_write_message(&shown::name(&slow.episode_title), slow.threshold)
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -214,6 +242,7 @@ pub(crate) fn write_problem_lists(
 /// start and its end, so a log file holds the lines only.
 pub(crate) fn write_run_summary(
     result: &SyncResult,
+    slow_writes: &[SlowWrite],
     output_dir: &std::path::Path,
     out: &mut impl Write,
     env: &StreamEnv,
@@ -228,7 +257,7 @@ pub(crate) fn write_run_summary(
         env.bold_green("Sync complete:"),
         completion_summary(result, env)
     )?;
-    write_problem_lists(result, out, env)?;
+    write_problem_lists(result, slow_writes, out, env)?;
     writeln!(
         out,
         "\n{}Output: {}",
@@ -454,7 +483,7 @@ mod tests {
         }];
         let mut out = Vec::new();
 
-        write_problem_lists(&with_warnings, &mut out, &PLAIN).unwrap();
+        write_problem_lists(&with_warnings, &[], &mut out, &PLAIN).unwrap();
 
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("Warnings:"));
@@ -473,7 +502,7 @@ mod tests {
     fn problem_lists_name_failed_and_damaged_episodes() {
         let mut out = Vec::new();
 
-        write_problem_lists(&result(1, 1, 1), &mut out, &PLAIN).unwrap();
+        write_problem_lists(&result(1, 1, 1), &[], &mut out, &PLAIN).unwrap();
 
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("Failed episodes:"));
@@ -487,7 +516,7 @@ mod tests {
     fn problem_lists_are_empty_without_problems() {
         let mut out = Vec::new();
 
-        write_problem_lists(&result(3, 0, 0), &mut out, &PLAIN).unwrap();
+        write_problem_lists(&result(3, 0, 0), &[], &mut out, &PLAIN).unwrap();
 
         assert!(out.is_empty());
     }
@@ -525,7 +554,7 @@ mod tests {
     fn the_problem_lists_colour_their_headings_and_reasons_when_colour_is_on() {
         let mut out = Vec::new();
 
-        write_problem_lists(&result(0, 1, 0), &mut out, &COLOURED).unwrap();
+        write_problem_lists(&result(0, 1, 0), &[], &mut out, &COLOURED).unwrap();
 
         assert_eq!(
             String::from_utf8(out).unwrap(),
@@ -548,7 +577,7 @@ mod tests {
 
     fn lists_of(result: &SyncResult) -> String {
         let mut out = Vec::new();
-        write_problem_lists(result, &mut out, &PLAIN).unwrap();
+        write_problem_lists(result, &[], &mut out, &PLAIN).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -663,7 +692,7 @@ mod tests {
 
     fn summary_of(result: &SyncResult, env: &StreamEnv) -> String {
         let mut out = Vec::new();
-        write_run_summary(result, Path::new("/podcasts/show"), &mut out, env).unwrap();
+        write_run_summary(result, &[], Path::new("/podcasts/show"), &mut out, env).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -691,12 +720,95 @@ mod tests {
         warned.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
 
         let mut out = Vec::new();
-        write_problem_lists(&warned, &mut out, &PIPE).unwrap();
+        write_problem_lists(&warned, &[], &mut out, &PIPE).unwrap();
 
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "\nWarnings:\n  Could not remove the leftover partial file /podcasts/a.mp3.partial; its \
              episode cannot be downloaded until it is deleted\n"
+        );
+    }
+
+    fn slow(title: &str) -> SlowWrite {
+        SlowWrite {
+            episode_title: title.to_string(),
+            threshold: std::time::Duration::from_secs(30),
+        }
+    }
+
+    #[test]
+    fn slow_write_message_says_the_write_took_long_and_why() {
+        assert_eq!(
+            slow_write_message(&n("Sega Nomad"), std::time::Duration::from_secs(30)),
+            "Writing \"Sega Nomad\" to the disk took longer than 30 s; a slow or network file \
+             system is the likely reason"
+        );
+    }
+
+    #[test]
+    fn slow_writes_have_a_list_of_their_own_after_the_warnings() {
+        let mut warned = result(0, 0, 0);
+        warned.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
+
+        let mut out = Vec::new();
+        write_problem_lists(
+            &warned,
+            &[slow("Sega Nomad"), slow("Atari Lynx")],
+            &mut out,
+            &PIPE,
+        )
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\nWarnings:\n  Could not remove the leftover partial file /podcasts/a.mp3.partial; its \
+             episode cannot be downloaded until it is deleted\n\
+             \nSlow writes:\n  \
+             Writing \"Sega Nomad\" to the disk took longer than 30 s; a slow or network file \
+             system is the likely reason\n  \
+             Writing \"Atari Lynx\" to the disk took longer than 30 s; a slow or network file \
+             system is the likely reason\n"
+        );
+    }
+
+    #[test]
+    fn a_terminal_gets_the_slow_writes_with_the_warning_mark() {
+        let mut out = Vec::new();
+        write_problem_lists(&result(0, 0, 0), &[slow("Sega Nomad")], &mut out, &PLAIN).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\nSlow writes:\n  \u{26a0}\u{fe0f}  Writing \"Sega Nomad\" to the disk took \
+             longer than 30 s; a slow or network file system is the likely reason\n"
+        );
+    }
+
+    #[test]
+    fn the_slow_writes_show_a_hostile_title_escaped() {
+        let mut out = Vec::new();
+        write_problem_lists(&result(0, 0, 0), &[slow(HOSTILE)], &mut out, &PIPE).unwrap();
+
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(HOSTILE_SHOWN), "{out}");
+    }
+
+    #[test]
+    fn the_run_summary_lists_the_slow_writes_before_the_output_folder() {
+        let mut out = Vec::new();
+        write_run_summary(
+            &result(1, 0, 0),
+            &[slow("Sega Nomad")],
+            Path::new("/podcasts/show"),
+            &mut out,
+            &PIPE,
+        )
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Sync complete: 1 downloaded, 0 existing, 0 failed\n\nSlow writes:\n  \
+             Writing \"Sega Nomad\" to the disk took longer than 30 s; a slow or network file \
+             system is the likely reason\n\nOutput: /podcasts/show\n"
         );
     }
 }

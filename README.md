@@ -182,7 +182,7 @@ Error: Cannot reach the feed host feeds.example.com
 
 No chain of causes and no backtrace is printed, also with `RUST_BACKTRACE` set.
 
-Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes and warnings are still listed, on stderr.
+Use `-q` (quiet mode) to suppress progress output. Failed and damaged episodes, warnings and slow writes are still listed, on stderr.
 
 When stdout is not a terminal, a pipe or a log file, podpull prints no banner and no emoji. The summary, the lists and the output folder keep their layout and stay on stdout, so a log holds `Sync complete:` and `Failed episodes:` lines it can be searched for. Colour follows the usual variables: `NO_COLOR` switches it off, and `CLICOLOR_FORCE=1` colours any stream, a pipe included, and wins over `NO_COLOR`, without bringing the banner or the emoji back. On Linux the emoji follow the locale (`LC_ALL`, `LC_CTYPE`, `LANG`); a locale that does not name UTF-8 gets ASCII stand-ins such as `[+]`.
 
@@ -203,6 +203,8 @@ podpull returns meaningful exit codes for scripting:
 | `2` | Problems found (some downloads failed, damaged or missing audio was found, or a warning was reported); code 1 takes precedence when downloads failed and none succeeded |
 
 Warnings are leftover `.partial` files that cannot be removed, unreadable episode metadata and audio that cannot be read for checking. A leftover `.partial` file or unreadable metadata stays until you deal with it, so every run exits with code 2 until then.
+
+A write to disk that takes longer than 30 seconds, usually on a slow network share, is listed under "Slow writes" at the end of the run, also in a log file and with `-q`. The episode was written, so a slow write does not change the exit code.
 
 ### Examples
 

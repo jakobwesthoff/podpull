@@ -17,6 +17,7 @@ mod cli;
 use cli::failure::{Failure, report};
 use cli::messages::{write_problem_lists, write_run_summary};
 use cli::reporter::IndicatifReporter;
+use cli::slow_writes::SlowWriteRecorder;
 use cli::{Mark, Stream, StreamEnv};
 
 /// Download and synchronize podcasts from RSS feeds
@@ -125,13 +126,18 @@ async fn run(args: &Args) -> Result<i32, Failure> {
         &indicatif
     };
 
-    let result = sync_podcast(&client, &args.feed, &args.output_dir, &options, reporter).await?;
+    // The live warning about a slow write is drawn above the bars only, so
+    // the lists at the end of the run repeat it for a log file and for -q.
+    let recorder = SlowWriteRecorder::new(reporter);
+    let result = sync_podcast(&client, &args.feed, &args.output_dir, &options, &recorder).await?;
+    let slow_writes = recorder.into_slow_writes();
 
     // Quiet mode suppresses progress, not problems: scripts and cron jobs
     // still see what needs attention, on stderr.
     if args.quiet {
         tolerate_a_closed_pipe(write_problem_lists(
             &result,
+            &slow_writes,
             &mut std::io::stderr(),
             &stderr_env,
         ))
@@ -139,6 +145,7 @@ async fn run(args: &Args) -> Result<i32, Failure> {
     } else {
         tolerate_a_closed_pipe(write_run_summary(
             &result,
+            &slow_writes,
             &args.output_dir,
             &mut std::io::stdout(),
             &stdout_env,

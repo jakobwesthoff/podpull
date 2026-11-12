@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An episode whose write to disk took longer than 30 seconds is listed under "Slow writes" at the end of the run, so a log file and the output of `-q` say that a slow disk held the run up; until now only the live line above the progress bars said so. The exit code does not change
+
 ## [2.1.0] - 2026-11-12
 
 ### Changed
