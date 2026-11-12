@@ -18,9 +18,9 @@ podpull printed its banner and its emoji whether stdout was a terminal, a pipe o
 
 **A stream that is no terminal gets the same structure without banner, symbols and blank lines around it.** On a pipe the summary line, the lists of failed and damaged episodes, the warnings and the output folder keep their layout and their order and stay on stdout. The banner is not written, no line starts with a symbol, and the output neither starts nor ends with a blank line. A terminal is unchanged. `-q` still prints only the problem lists, on stderr, and decides symbols and colour by stderr.
 
-**The progress bars and the warnings above them are drawn only when stderr is a terminal.** indicatif draws to stderr. The lists at the end repeat the warnings, so a log file holds them once.
+**The progress bars and the warnings above them are drawn only when stderr is a terminal.** indicatif draws to stderr. The lists at the end repeat the warnings about unreadable metadata, leftover partial files, unreadable audio and damaged audio, so a log file holds those once. The warning about a slow disk is printed only while the bars are drawn and is not in a log file.
 
-**Colour follows `console`:** `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and a terminal that supports colour. `CLICOLOR_FORCE` colours a stream that is no terminal and does not make it rich: banner and symbols stay off.
+**Colour follows `console`:** `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and a terminal that supports colour. `CLICOLOR_FORCE` colours a stream that is no terminal, also when `NO_COLOR` is set, and does not make it rich: banner and symbols stay off.
 
 **Symbols are shown when `console` says its terminal shows them or when the locale names UTF-8.** The first of `LC_ALL`, `LC_CTYPE` and `LANG` that is set and not empty decides, and a value that holds `utf-8` or `utf8` in any case names UTF-8. Without symbols a terminal gets ASCII stand-ins.
 

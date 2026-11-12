@@ -131,7 +131,8 @@ impl IndicatifReporter {
     /// bars behind.
     ///
     /// Nothing is written when the bars are not drawn, as they are not when
-    /// stderr is no terminal: the end of the run lists the warnings again.
+    /// stderr is no terminal. The end of the run lists the warnings again,
+    /// except the one about a slow disk, which is printed only here.
     fn warn(&self, text: String) {
         if self.multi.is_hidden() {
             return;
