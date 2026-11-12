@@ -14,7 +14,7 @@ An error that ended the run was printed by the runtime as `Error: Failed to sync
 
 ## Decision
 
-**The message of a library error that can end the run is what a person is told first.** It holds a host or a status and fixed words, never a name from the feed or the disk: names are shown by the step the run was in (ADR 22). Where the title depends on the cause, a pure function of the kind of the cause computes it in the `#[error]` attribute (`fetch_title`, `feed_file_title`, `folder_title`), so there is one variant per failing operation and not one per kind.
+**The message of a library error that can end the run is what a person is told first.** It holds a host or a status and fixed words, never a name from the feed or the disk. The host of a failed fetch is the one that failed, so after a redirect it is the host that answered, and the step keeps the URL that was asked for: names are shown by the step the run was in (ADR 22). Where the title depends on the cause, a pure function of the kind of the cause computes it in the `#[error]` attribute (`fetch_title`, `feed_file_title`, `folder_title`), so there is one variant per failing operation and not one per kind.
 
 **The fix is a `Hint` of the error.** `Hint::hint` returns a fixed sentence or nothing. `FeedError`, `StateError` and `MetadataError` implement it by the kind of the cause, next to the title function of the same kind, and `SyncError` forwards. The wrappers `SyncError::{Feed, State, Metadata}` and `StateError::Metadata` are transparent: they show the message and the hint of what they wrap. No error carries a code, and no dependency was added for any of this.
 

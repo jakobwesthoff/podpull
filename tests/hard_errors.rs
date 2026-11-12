@@ -189,3 +189,27 @@ fn a_read_only_output_folder_prints_a_plain_error_that_names_podcast_json() {
     );
     assert!(!run.stderr.contains(".partial"), "{run:?}");
 }
+
+#[test]
+fn a_feed_that_is_not_found_after_a_redirect_names_the_host_that_answered() {
+    let directory = tempfile::tempdir().unwrap();
+    let answering_port = serve_status("404 Not Found", RSS);
+    let location = format!("http://localhost:{answering_port}/moved.xml");
+    let redirecting_port = serve_status(
+        Box::leak(format!("302 Found\r\nlocation: {location}").into_boxed_str()),
+        "",
+    );
+    let feed = format!("http://127.0.0.1:{redirecting_port}/feed.xml");
+
+    let run = failing_run(directory.path(), &feed);
+
+    assert_eq!(
+        lines(&run),
+        vec![
+            "Error: The feed was not found on localhost (HTTP 404)".to_string(),
+            "  cause: HTTP status client error (404 Not Found)".to_string(),
+            format!("  while fetching the feed {feed}"),
+        ],
+        "{run:?}"
+    );
+}

@@ -14,7 +14,7 @@ Amends [12. HTTP client trait for testability](0012-http-client-trait-for-testab
 
 ## Decision
 
-**The trait returns `HttpError`.** It holds a kind and the source error. `HttpClient::get_bytes`, `HttpClient::get_stream`, the items of `ByteStream`, `FeedError::FetchFailed` and `DownloadError::{HttpFailed, StreamFailed}` use it. The text of an `HttpError` is the text of its source.
+**The trait returns `HttpError`.** It holds a kind, the source error and the URL the failing request went to, which after a redirect is not the URL that was asked for. `HttpClient::get_bytes`, `HttpClient::get_stream`, the items of `ByteStream`, `FeedError::FetchFailed` and `DownloadError::{HttpFailed, StreamFailed}` use it. The text of an `HttpError` is the text of its source.
 
 **The kind is `HttpErrorKind`:** `Dns`, `Refused`, `TimedOut`, `Tls`, `Connect`, `Status(code)` or `Other`.
 

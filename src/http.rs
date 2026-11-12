@@ -52,6 +52,9 @@ pub struct HttpError {
     kind: HttpErrorKind,
     #[source]
     source: Box<dyn Error + Send + Sync>,
+    /// The URL the failing request went to, which after a redirect is not
+    /// the URL that was asked for
+    url: Option<Box<url::Url>>,
 }
 
 impl HttpError {
@@ -59,7 +62,19 @@ impl HttpError {
         Self {
             kind,
             source: source.into(),
+            url: None,
         }
+    }
+
+    /// The same error, with the URL the failing request went to
+    pub fn with_url(mut self, url: url::Url) -> Self {
+        self.url = Some(Box::new(url));
+        self
+    }
+
+    /// The URL the failing request went to, when it is known
+    pub fn url(&self) -> Option<&url::Url> {
+        self.url.as_deref()
     }
 
     pub fn kind(&self) -> HttpErrorKind {
@@ -160,7 +175,11 @@ fn facts_of(error: &reqwest::Error) -> Facts {
 
 impl From<reqwest::Error> for HttpError {
     fn from(error: reqwest::Error) -> Self {
-        Self::new(kind_from(&facts_of(&error)), error)
+        let kind = kind_from(&facts_of(&error));
+        let url = error.url().cloned().map(Box::new);
+        let mut converted = Self::new(kind, error);
+        converted.url = url;
+        converted
     }
 }
 

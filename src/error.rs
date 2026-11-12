@@ -32,9 +32,13 @@ fn host(url: &url::Url) -> &str {
     url.host_str().unwrap_or("the host")
 }
 
-fn fetch_title(url: &url::Url, kind: HttpErrorKind) -> String {
-    let host = host(url);
-    match kind {
+/// The title of a failed fetch of the feed at `url`
+///
+/// The host it names is the one that failed, which after a redirect is not
+/// the host of the feed URL.
+fn fetch_title(url: &url::Url, source: &HttpError) -> String {
+    let host = host(source.url().unwrap_or(url));
+    match source.kind() {
         HttpErrorKind::Dns => format!("Cannot reach the feed host {host}"),
         HttpErrorKind::Refused => format!("The feed host {host} refuses connections"),
         HttpErrorKind::TimedOut => format!("The feed host {host} does not answer in time"),
@@ -173,7 +177,7 @@ impl Hint for SyncError {
 /// Errors that can occur when fetching or parsing RSS feeds
 #[derive(Error, Debug)]
 pub enum FeedError {
-    #[error("{}", fetch_title(.url, .source.kind()))]
+    #[error("{}", fetch_title(.url, .source))]
     FetchFailed {
         url: url::Url,
         #[source]
@@ -654,6 +658,17 @@ mod tests {
         fetch(HttpErrorKind::Connect),
         "Cannot connect to the feed host feeds.example.com",
         Some("Check the feed URL and the network connection.")
+    );
+    row!(
+        a_feed_that_was_not_found_on_the_host_a_redirect_led_to,
+        FeedError::FetchFailed {
+            url: feed_url(),
+            source: HttpError::new(HttpErrorKind::Status(404), "cause")
+                .with_url(url::Url::parse("https://cdn.example.net/moved.xml").unwrap()),
+        }
+        .into(),
+        "The feed was not found on cdn.example.net (HTTP 404)",
+        Some("Check the feed URL for a typo. The feed may have moved or been removed.")
     );
     row!(
         a_feed_fetch_that_fails_otherwise,
