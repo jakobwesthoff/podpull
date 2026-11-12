@@ -119,6 +119,25 @@ impl IndicatifReporter {
         bar
     }
 
+    /// Show an episode's place in the queue, a status and its title on its
+    /// bar
+    fn show_episode_status(
+        &self,
+        download_id: usize,
+        episode_index: usize,
+        total_to_download: usize,
+        status: &str,
+        episode_title: &str,
+    ) {
+        self.get_or_create_bar(download_id)
+            .set_message(episode_message(
+                episode_index,
+                total_to_download,
+                status,
+                episode_title,
+            ));
+    }
+
     fn finish_bar(&self, download_id: usize) {
         let mut bars = self.bars.lock().unwrap();
         if let Some(bar) = bars.remove(&download_id) {
@@ -197,12 +216,13 @@ impl ProgressReporter for IndicatifReporter {
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_length(content_length.unwrap_or(0));
                 bar.set_position(0);
-                bar.set_message(episode_message(
+                self.show_episode_status(
+                    download_id,
                     episode_index,
                     total_to_download,
                     "",
                     &episode_title,
-                ));
+                );
             }
 
             ProgressEvent::DownloadSyncing {
@@ -211,13 +231,13 @@ impl ProgressReporter for IndicatifReporter {
                 episode_index,
                 total_to_download,
             } => {
-                self.get_or_create_bar(download_id)
-                    .set_message(episode_message(
-                        episode_index,
-                        total_to_download,
-                        SYNCING_STATUS,
-                        &episode_title,
-                    ));
+                self.show_episode_status(
+                    download_id,
+                    episode_index,
+                    total_to_download,
+                    SYNCING_STATUS,
+                    &episode_title,
+                );
             }
 
             ProgressEvent::DownloadSyncSlow {
@@ -227,13 +247,13 @@ impl ProgressReporter for IndicatifReporter {
                 total_to_download,
                 threshold,
             } => {
-                self.get_or_create_bar(download_id)
-                    .set_message(episode_message(
-                        episode_index,
-                        total_to_download,
-                        SLOW_SYNC_STATUS,
-                        &episode_title,
-                    ));
+                self.show_episode_status(
+                    download_id,
+                    episode_index,
+                    total_to_download,
+                    SLOW_SYNC_STATUS,
+                    &episode_title,
+                );
                 // The bar text is cut at the terminal width, so the reason
                 // for the wait goes on a line of its own above the bars.
                 let _ = self.multi.println(format!(
@@ -248,13 +268,13 @@ impl ProgressReporter for IndicatifReporter {
                 episode_index,
                 total_to_download,
             } => {
-                self.get_or_create_bar(download_id)
-                    .set_message(episode_message(
-                        episode_index,
-                        total_to_download,
-                        "",
-                        &episode_title,
-                    ));
+                self.show_episode_status(
+                    download_id,
+                    episode_index,
+                    total_to_download,
+                    "",
+                    &episode_title,
+                );
             }
 
             ProgressEvent::DownloadProgress {

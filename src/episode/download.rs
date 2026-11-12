@@ -19,7 +19,7 @@ use crate::progress::{ProgressEvent, ProgressReporter};
 
 /// Context for tracking a download in concurrent scenarios
 #[derive(Debug, Clone)]
-pub struct DownloadContext {
+pub(crate) struct DownloadContext {
     /// Slot ID (0 to max_concurrent-1) for progress bar management
     pub download_id: usize,
     /// Index of this episode in the download queue

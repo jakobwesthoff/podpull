@@ -11,8 +11,7 @@ mod partial;
 mod test_support;
 
 pub(crate) use disk_wait::{DISK_WAIT_SLOW_AFTER, with_disk_wait_notice};
-pub use download::DownloadContext;
-pub(crate) use download::{SyncSettings, stage_download};
+pub(crate) use download::{DownloadContext, SyncSettings, stage_download};
 pub use filename::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };
