@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::MetadataError;
 use crate::fs_sync::sync_file;
+use crate::partial_file::partial_path;
 
 mod episode;
 mod podcast;
@@ -60,7 +61,7 @@ impl StagedMetadata {
 /// Without the sync, a power loss or a crashed file server could persist
 /// the rename before the data and leave an empty file under the final name.
 fn stage_metadata_file(path: &Path, contents: &[u8]) -> Result<StagedMetadata, MetadataError> {
-    let partial_path = PathBuf::from(format!("{}.partial", path.display()));
+    let partial_path = partial_path(path);
     let write_failed = |e| MetadataError::Write {
         path: partial_path.clone(),
         source: e,

@@ -16,6 +16,7 @@ use crate::error::DownloadError;
 use crate::feed::Episode;
 use crate::fs_sync::sync_file;
 use crate::http::HttpClient;
+use crate::partial_file::partial_path;
 use crate::progress::{ProgressEvent, ProgressReporter};
 
 /// Context for tracking a download in concurrent scenarios
@@ -138,7 +139,7 @@ pub(crate) async fn stage_download_with<C: HttpClient>(
         content_length: response.content_length,
     });
 
-    let partial_path = PathBuf::from(format!("{}.partial", output_path.display()));
+    let partial_path = partial_path(output_path);
 
     // Within a sync, the directory scan removes leftover partial files before
     // any download starts, so an existing one belongs to another download

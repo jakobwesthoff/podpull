@@ -16,6 +16,7 @@ mod feed;
 mod fs_sync;
 mod http;
 mod metadata;
+mod partial_file;
 mod progress;
 mod state;
 mod sync;

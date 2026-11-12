@@ -14,6 +14,7 @@ use crate::episode::{
 use crate::error::{MetadataError, StateError};
 use crate::feed::Episode;
 use crate::metadata::read_episode_metadata;
+use crate::partial_file::is_partial;
 use crate::progress::{ProgressEvent, ProgressReporter};
 
 /// State of the output directory, as found by [`scan_output_dir`]
@@ -305,7 +306,7 @@ pub fn scan_output_dir(
             .unwrap_or("")
             .to_string();
 
-        if filename.ends_with(".partial") {
+        if is_partial(&filename) {
             partial_files.push(path);
         } else {
             existing_files.insert(filename.clone());
