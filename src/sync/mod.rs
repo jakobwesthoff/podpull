@@ -1370,7 +1370,10 @@ mod tests {
         }
     }
 
-    async fn download_one(dir: &Path, planned: &PlannedDownload) -> Result<(), String> {
+    async fn download_one(
+        dir: &Path,
+        planned: &PlannedDownload,
+    ) -> Result<(), downloads::EpisodeError> {
         let context = DownloadContext {
             download_id: 0,
             episode_index: 0,
@@ -1419,7 +1422,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.starts_with("Failed to write metadata"));
+        assert!(error.to_string().starts_with("Failed to write metadata"));
         assert!(!dir.path().join(format!("{}.mp3", NOMAD_STEM)).exists());
         assert!(
             !dir.path()
@@ -1439,7 +1442,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.starts_with("Failed to write metadata"));
+        assert!(error.to_string().starts_with("Failed to write metadata"));
         assert_eq!(
             std::fs::read(dir.path().join(format!("{}.mp3", NOMAD_STEM))).unwrap(),
             b"fake audio"
@@ -1462,6 +1465,140 @@ mod tests {
             !dir.path()
                 .join(format!("{}.json.partial", NOMAD_STEM))
                 .exists()
+        );
+    }
+
+    // =========================================================
+    // The text of an episode's failure
+    // =========================================================
+
+    /// A stored episode with the audio the mock client serves and a metadata
+    /// file that does not exist, so recording a GUID there fails
+    fn stored_without_metadata() -> crate::state::StoredEpisode {
+        use sha2::{Digest, Sha256};
+
+        crate::state::StoredEpisode {
+            title: "Stored".to_string(),
+            guid: Some("stored".to_string()),
+            additional_guids: Vec::new(),
+            original_url: "https://example.com/stored.mp3".to_string(),
+            pub_date: None,
+            audio_filename: "stored.mp3".to_string(),
+            audio_listed: true,
+            metadata_filename: "stored.json".to_string(),
+            content_hash: Some(format!(
+                "sha256:{}",
+                crate::episode::lower_hex(&Sha256::digest(b"fake audio"))
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_failure_text_of_a_guid_that_cannot_be_recorded() {
+        let dir = tempdir().unwrap();
+        let mut planned = planned_nomad(Purpose::NewEpisode {
+            replaced_candidates: vec![stored_without_metadata()],
+        });
+        planned.stem = "reissued".to_string();
+        let context = DownloadContext {
+            download_id: 0,
+            episode_index: 0,
+            total_to_download: 1,
+        };
+
+        let error = download_planned(
+            &client_for(&[NOMAD_ORIGINAL]),
+            &planned,
+            &OutputState::empty(dir.path()),
+            &HashSet::from(["stored.mp3".to_string()]),
+            &context,
+            &NoopReporter,
+        )
+        .await
+        .err()
+        .expect("the stored metadata does not exist")
+        .to_string();
+
+        assert!(
+            error.starts_with("Failed to record the GUID of identical audio: "),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_failure_text_of_a_failed_metadata_write() {
+        let dir = tempdir().unwrap();
+        block_metadata_path(dir.path());
+
+        let error = download_one(dir.path(), &planned_nomad(new_episode()))
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.starts_with("Failed to write metadata: Failed to write metadata file "),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_failure_text_of_a_blocking_task_that_panics() {
+        let error = downloads::blocking(|| -> () { panic!("boom") })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.starts_with("File system work failed: "), "{error}");
+    }
+
+    /// A reporter that panics when a download starts
+    struct PanicsOnStart;
+
+    impl ProgressReporter for PanicsOnStart {
+        fn report(&self, event: ProgressEvent) {
+            if matches!(event, ProgressEvent::DownloadStarting { .. }) {
+                panic!("boom");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_failure_text_of_a_download_that_panics() {
+        let dir = tempdir().unwrap();
+        let options = SyncOptions {
+            limit: None,
+            max_concurrent: 1,
+            audio_check: AudioCheck::Collisions,
+        };
+
+        let totals = downloads::download_all(
+            &client_for(&[NOMAD_ORIGINAL]),
+            vec![planned_nomad(new_episode())],
+            &OutputState::empty(dir.path()),
+            &HashSet::new(),
+            &PanicsOnStart,
+            &options,
+        )
+        .await;
+
+        assert_eq!(totals.failed_episodes.len(), 1);
+        assert_eq!(totals.failed_episodes[0].error, "Download panicked: boom");
+    }
+
+    #[test]
+    fn the_failure_text_names_an_audio_file_that_cannot_be_removed() {
+        let error = downloads::EpisodeError::WriteMetadata {
+            source: crate::error::MetadataError::Write {
+                path: PathBuf::from("/podcasts/a.json"),
+                source: std::io::Error::other("disk full"),
+            },
+            leftover_audio: Some(("a.mp3".to_string(), std::io::Error::other("busy"))),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Failed to write metadata: Failed to write metadata file /podcasts/a.json: \
+             disk full; the audio file a.mp3 could not be removed: busy"
         );
     }
 

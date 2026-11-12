@@ -14,10 +14,50 @@ use crate::episode::{
     DISK_WAIT_SLOW_AFTER, DownloadContext, SyncSettings, WaitNotice, filename_claim_key, hash_file,
     stage_download, with_disk_wait_notice,
 };
+use crate::error::{DownloadError, MetadataError};
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
 use crate::progress::{ProgressEvent, ProgressReporter};
 use crate::state::{OutputState, PlannedDownload, Purpose, StoredEpisode};
+
+/// Why the download of one episode failed
+///
+/// Each variant's text is what the progress display and the sync result
+/// show for the episode.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum EpisodeError {
+    #[error(transparent)]
+    Download(#[from] DownloadError),
+
+    #[error("Failed to record the GUID of identical audio: {0}")]
+    RecordGuid(#[source] MetadataError),
+
+    #[error("Failed to write metadata: {source}{}", leftover_audio_note(.leftover_audio))]
+    WriteMetadata {
+        #[source]
+        source: MetadataError,
+        /// The audio file the failure left behind and the reason it could
+        /// not be removed
+        leftover_audio: Option<(String, std::io::Error)>,
+    },
+
+    #[error("File system work failed: {0}")]
+    Join(#[source] tokio::task::JoinError),
+
+    #[error("Download panicked: {0}")]
+    Panicked(String),
+}
+
+/// The sentence part that names an audio file the failure could not remove
+fn leftover_audio_note(leftover_audio: &Option<(String, std::io::Error)>) -> String {
+    match leftover_audio {
+        Some((audio_filename, remove_error)) => format!(
+            "; the audio file {} could not be removed: {}",
+            audio_filename, remove_error
+        ),
+        None => String::new(),
+    }
+}
 
 /// What became of one planned download
 pub(super) enum DownloadOutcome {
@@ -124,8 +164,9 @@ pub(super) async fn download_all<C: HttpClient>(
                             return (title, DownloadOutcome::AlreadyStored);
                         }
                         Ok(Err(error)) => error,
-                        Err(panic) => format!("Download panicked: {}", panic_message(&*panic)),
-                    };
+                        Err(panic) => EpisodeError::Panicked(panic_message(&*panic).to_string()),
+                    }
+                    .to_string();
                     // Every started download ends with an event a reporter
                     // can close its display for this slot on. The reporter
                     // may be what failed, so a second panic is contained.
@@ -185,7 +226,7 @@ pub(super) async fn download_planned<C: HttpClient>(
     intact: &HashSet<String>,
     context: &DownloadContext,
     reporter: &dyn ProgressReporter,
-) -> Result<Placed, String> {
+) -> Result<Placed, EpisodeError> {
     let episode = &planned.episode;
     let output_dir = state.output_dir();
     let audio_filename = planned.audio_filename();
@@ -200,8 +241,7 @@ pub(super) async fn download_planned<C: HttpClient>(
         reporter,
         &SyncSettings::default(),
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
 
     // An entry re-issued under a new GUID with audio stored byte for byte
     // adds that GUID to the stored episode instead of a copy. Every other
@@ -216,7 +256,7 @@ pub(super) async fn download_planned<C: HttpClient>(
         let guid = guid.clone();
         blocking(move || add_guid_to_episode_metadata(&stored_metadata_path, &guid))
             .await?
-            .map_err(|e| format!("Failed to record the GUID of identical audio: {}", e))?;
+            .map_err(EpisodeError::RecordGuid)?;
         reporter.report(ProgressEvent::EpisodeAlreadyStored {
             download_id: context.download_id,
             episode_title: episode.title.clone(),
@@ -248,7 +288,10 @@ pub(super) async fn download_planned<C: HttpClient>(
         Ok(staged_metadata) => staged_metadata,
         Err(e) => {
             staged_audio.discard().await;
-            return Err(format!("Failed to write metadata: {}", e));
+            return Err(EpisodeError::WriteMetadata {
+                source: e,
+                leftover_audio: None,
+            });
         }
     };
 
@@ -256,24 +299,24 @@ pub(super) async fn download_planned<C: HttpClient>(
         Ok(bytes_downloaded) => bytes_downloaded,
         Err(e) => {
             blocking(move || staged_metadata.discard()).await?;
-            return Err(e.to_string());
+            return Err(e.into());
         }
     };
 
     if let Err(e) = blocking(move || staged_metadata.commit()).await? {
-        let mut error = format!("Failed to write metadata: {}", e);
+        let mut leftover_audio = None;
         // A fresh download owns its name, so its audio goes again. A repair
         // replaced audio that the existing metadata still names; removing it
         // would leave that metadata without audio.
         if matches!(planned.purpose, Purpose::NewEpisode { .. })
             && let Err(remove_error) = remove_audio(output_dir, &audio_filename).await
         {
-            error.push_str(&format!(
-                "; the audio file {} could not be removed: {}",
-                audio_filename, remove_error
-            ));
+            leftover_audio = Some((audio_filename, remove_error));
         }
-        return Err(error);
+        return Err(EpisodeError::WriteMetadata {
+            source: e,
+            leftover_audio,
+        });
     }
 
     reporter.report(ProgressEvent::DownloadCompleted {
@@ -291,10 +334,10 @@ pub(super) async fn download_planned<C: HttpClient>(
 /// directly in one of them would hold up every other download.
 pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
+) -> Result<T, EpisodeError> {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|e| format!("File system work failed: {}", e))
+        .map_err(EpisodeError::Join)
 }
 
 /// Remove an audio file podpull just put in place
