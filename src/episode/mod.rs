@@ -4,12 +4,14 @@
 
 mod download;
 mod filename;
+mod hash;
 
-pub(crate) use download::{DISK_WAIT_SLOW_AFTER, hash_file, with_disk_wait_notice};
+pub(crate) use download::{DISK_WAIT_SLOW_AFTER, with_disk_wait_notice};
 pub use download::{DownloadContext, stage_download};
 pub use filename::{
     filename_claim_key, generate_filename_stem, generate_unique_filename_stem, get_audio_extension,
 };
+pub(crate) use hash::hash_file;
 
 /// Lowercase hex digits of `bytes`, as stored content hashes and hashed
 /// filename suffixes spell a SHA-256 digest
