@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A warning printed while podpull runs (unreadable metadata, a slow disk, damaged audio) and an episode title with an emoji variation selector no longer leave a copy of the progress line behind on the terminal
+
 ## [2.0.3] - 2026-11-12
 
 ### Fixed

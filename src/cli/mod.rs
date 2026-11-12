@@ -8,6 +8,8 @@
 pub(crate) mod env;
 pub(crate) mod messages;
 pub(crate) mod reporter;
+#[cfg(test)]
+mod virtual_terminal;
 
 pub(crate) use env::{Env, Mark};
 

@@ -3,9 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::sync::Mutex;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use podpull::{ProgressEvent, ProgressReporter};
 
@@ -19,12 +20,28 @@ pub(crate) struct IndicatifReporter {
     /// Slots whose download already printed the warning about a slow disk
     slow_warned: Mutex<HashSet<usize>>,
     main_bar: ProgressBar,
+    /// Where the lines of warnings go, outside what indicatif tracks
+    warnings: Mutex<Box<dyn Write + Send>>,
     env: Env,
 }
 
 impl IndicatifReporter {
     pub(crate) fn new(env: Env) -> Self {
-        let multi = MultiProgress::new();
+        Self::with_target(
+            env,
+            ProgressDrawTarget::stderr(),
+            Box::new(std::io::stderr()),
+        )
+    }
+
+    /// A reporter drawing on `target`, with warning lines going to
+    /// `warnings`, which has to show them on the same screen as the target
+    pub(crate) fn with_target(
+        env: Env,
+        target: ProgressDrawTarget,
+        warnings: Box<dyn Write + Send>,
+    ) -> Self {
+        let multi = MultiProgress::with_draw_target(target);
 
         let main_style = ProgressStyle::default_bar()
             .template("{spinner:.green} {wide_msg}")
@@ -39,6 +56,7 @@ impl IndicatifReporter {
             bars: Mutex::new(HashMap::new()),
             slow_warned: Mutex::new(HashSet::new()),
             main_bar,
+            warnings: Mutex::new(warnings),
             env,
         }
     }
@@ -87,13 +105,39 @@ impl IndicatifReporter {
         episode_title: &str,
     ) {
         self.get_or_create_bar(download_id)
-            .set_message(episode_message(
+            .set_message(for_progress(&episode_message(
                 episode_index,
                 total_to_download,
                 status,
                 episode_title,
                 &self.env,
-            ));
+            )));
+    }
+
+    /// Print a warning line above the bars
+    ///
+    /// The line is written outside the lines indicatif keeps track of. It
+    /// cannot be one of them: indicatif counts a character followed by
+    /// U+FE0F, as the symbol of a warning is, as one column where a
+    /// terminal draws two. The line would wrap, indicatif would count the
+    /// rows it drew one short and the next redraw would leave a copy of the
+    /// bars behind.
+    ///
+    /// Nothing is written when the bars are not drawn, as they are not when
+    /// stderr is no terminal: the end of the run lists the warnings again.
+    fn warn(&self, text: String) {
+        if self.multi.is_hidden() {
+            return;
+        }
+        let line = format!("{}{}", self.env.mark(Mark::Warning), text);
+        self.multi.suspend(|| {
+            let mut warnings = self
+                .warnings
+                .lock()
+                .expect("no code panics while holding the warning writer");
+            let _ = writeln!(warnings, "{line}");
+            let _ = warnings.flush();
+        });
     }
 
     fn finish_bar(&self, download_id: usize) {
@@ -108,19 +152,19 @@ impl ProgressReporter for IndicatifReporter {
     fn report(&self, event: ProgressEvent) {
         match event {
             ProgressEvent::FetchingFeed { url } => {
-                self.main_bar.set_message(format!(
+                self.main_bar.set_message(for_progress(&format!(
                     "{}Fetching feed: {}",
                     self.env.mark(Mark::Globe),
                     self.env.cyan(&url)
-                ));
+                )));
             }
 
             ProgressEvent::ParsingFeed { source } => {
-                self.main_bar.set_message(format!(
+                self.main_bar.set_message(for_progress(&format!(
                     "{}Parsing feed: {}",
                     self.env.mark(Mark::Scroll),
                     self.env.cyan(&source)
-                ));
+                )));
             }
 
             ProgressEvent::ScanningDirectory {
@@ -128,10 +172,10 @@ impl ProgressReporter for IndicatifReporter {
                 total_files,
             } => {
                 if total_files == 0 {
-                    self.main_bar.set_message(format!(
+                    self.main_bar.set_message(for_progress(&format!(
                         "{}Scanning existing episodes...",
                         self.env.mark(Mark::Search)
-                    ));
+                    )));
                 } else {
                     // Switch to progress bar style for scanning
                     if files_scanned == 0 {
@@ -160,7 +204,7 @@ impl ProgressReporter for IndicatifReporter {
                     .template("{spinner:.green} {wide_msg}")
                     .unwrap();
                 self.main_bar.set_style(main_style);
-                self.main_bar.set_message(format!(
+                self.main_bar.set_message(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Headphones),
                     plan_message(
@@ -171,7 +215,7 @@ impl ProgressReporter for IndicatifReporter {
                         repairs,
                         &self.env
                     )
-                ));
+                )));
             }
 
             ProgressEvent::DownloadStarting {
@@ -229,12 +273,10 @@ impl ProgressReporter for IndicatifReporter {
                 // The bar text is cut at the terminal width, so the reason
                 // for the wait goes on a line of its own above the bars.
                 if self.first_slow_warning(download_id) {
-                    let _ = self.multi.println(format!(
-                        "{}{}",
-                        self.env.mark(Mark::Warning),
+                    self.warn(
                         self.env
-                            .yellow(slow_sync_warning(&episode_title, threshold))
-                    ));
+                            .yellow(slow_sync_warning(&episode_title, threshold)),
+                    );
                 }
             }
 
@@ -274,11 +316,11 @@ impl ProgressReporter for IndicatifReporter {
                 bar.set_position(bytes_downloaded);
                 // No index displayed, so use 0 for index_width calculation
                 let title_width = available_title_width(0);
-                bar.set_message(format!(
+                bar.set_message(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Success),
                     self.env.green(truncate_title(&episode_title, title_width))
-                ));
+                )));
                 self.finish_bar(download_id);
             }
 
@@ -290,7 +332,7 @@ impl ProgressReporter for IndicatifReporter {
                 let bar = self.get_or_create_bar(download_id);
                 // Reserve space for " - " and some error text (at least 30 chars)
                 let title_width = available_title_width(0).saturating_sub(3 + 30);
-                bar.abandon_with_message(format!(
+                bar.abandon_with_message(for_progress(&format!(
                     "{}{} - {}",
                     self.env.mark(Mark::Failure),
                     self.env.red(truncate_title(
@@ -298,18 +340,18 @@ impl ProgressReporter for IndicatifReporter {
                         title_width.max(MIN_TITLE_WIDTH)
                     )),
                     self.env.red(&reason.root)
-                ));
+                )));
                 self.finish_bar(download_id);
             }
 
             ProgressEvent::PartialFilesCleanedUp { count } => {
                 if count > 0 {
-                    self.main_bar.set_message(format!(
+                    self.main_bar.set_message(for_progress(&format!(
                         "{}Cleaned up {} interrupted download{}",
                         self.env.mark(Mark::Broom),
                         self.env.yellow(count),
                         if count == 1 { "" } else { "s" }
-                    ));
+                    )));
                 }
             }
 
@@ -319,31 +361,23 @@ impl ProgressReporter for IndicatifReporter {
                 audio_filename,
             } => {
                 let bar = self.get_or_create_bar(download_id);
-                bar.set_message(format!(
+                bar.set_message(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Success),
                     self.env
                         .green(already_stored_message(&episode_title, &audio_filename))
-                ));
+                )));
                 self.finish_bar(download_id);
             }
 
             ProgressEvent::PartialFileStuck { path } => {
-                let _ = self.multi.println(format!(
-                    "{}{}",
-                    self.env.mark(Mark::Warning),
-                    self.env.yellow(stuck_partial_file_message(&path))
-                ));
+                self.warn(self.env.yellow(stuck_partial_file_message(&path)));
             }
 
             ProgressEvent::MetadataUnreadable { path, reason } => {
                 // Printed above the progress bars so the warning outlives
                 // the transient status line.
-                let _ = self.multi.println(format!(
-                    "{}{}",
-                    self.env.mark(Mark::Warning),
-                    self.env.yellow(unreadable_metadata_message(&path, &reason))
-                ));
+                self.warn(self.env.yellow(unreadable_metadata_message(&path, &reason)));
             }
 
             ProgressEvent::VerifyingStoredAudio {
@@ -363,12 +397,13 @@ impl ProgressReporter for IndicatifReporter {
                 // previous file go first and the new style last.
                 self.main_bar.set_position(0);
                 self.main_bar.set_length(0);
-                self.main_bar.set_prefix(format!(
+                self.main_bar.set_prefix(for_progress(&format!(
                     "{}{}",
                     self.env.mark(Mark::Search),
                     checking_prefix(position, total, &self.env)
-                ));
-                self.main_bar.set_message(self.env.cyan(&audio_filename));
+                )));
+                self.main_bar
+                    .set_message(for_progress(&self.env.cyan(&audio_filename)));
                 self.main_bar.set_style(check_style);
             }
 
@@ -384,12 +419,10 @@ impl ProgressReporter for IndicatifReporter {
                 audio_filename,
                 reason,
             } => {
-                let _ = self.multi.println(format!(
-                    "{}{}",
-                    self.env.mark(Mark::Warning),
+                self.warn(
                     self.env
-                        .yellow(unverifiable_audio_message(&audio_filename, &reason))
-                ));
+                        .yellow(unverifiable_audio_message(&audio_filename, &reason)),
+                );
             }
 
             ProgressEvent::StoredAudioDamaged {
@@ -398,16 +431,12 @@ impl ProgressReporter for IndicatifReporter {
                 kind,
                 remedy,
             } => {
-                let _ = self.multi.println(format!(
-                    "{}{}",
-                    self.env.mark(Mark::Warning),
-                    self.env.yellow(damage_message(
-                        &episode_title,
-                        &audio_filename,
-                        kind,
-                        remedy
-                    ))
-                ));
+                self.warn(self.env.yellow(damage_message(
+                    &episode_title,
+                    &audio_filename,
+                    kind,
+                    remedy,
+                )));
             }
 
             ProgressEvent::SyncCompleted => {
@@ -451,6 +480,20 @@ fn episode_message(
     )
 }
 
+/// `text` as a progress bar can show it
+///
+/// indicatif measures a character followed by U+FE0F (an emoji variation
+/// selector) as one column and a terminal draws two, so the line it pads to
+/// the terminal width is one column too wide. It wraps, indicatif miscounts
+/// the rows it drew and every redraw leaves a copy of the bar behind.
+/// Episode titles from a feed can hold such a character, so the selector is
+/// dropped from every text a bar shows.
+fn for_progress(text: &str) -> String {
+    text.chars()
+        .filter(|character| !matches!(character, '\u{FE0F}' | '\u{FE0E}'))
+        .collect()
+}
+
 /// Shorten a title to `max_len` terminal columns, ending in "..." when it
 /// had to be cut
 ///
@@ -482,6 +525,7 @@ fn available_title_width(index_width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::virtual_terminal::VirtualTerminal;
     use podpull::FailureReason;
 
     const PLAIN: Env = Env {
@@ -699,5 +743,186 @@ mod tests {
             .collect();
 
         assert!(with_selector.is_empty(), "{:?}", with_selector);
+    }
+
+    // =========================================================
+    // What stays on the screen
+    // =========================================================
+
+    /// The rows left on a terminal `width` columns wide after `events`
+    fn screen_after(width: usize, events: impl FnOnce(&IndicatifReporter)) -> Vec<String> {
+        let terminal = VirtualTerminal::new(width);
+        let reporter = IndicatifReporter::with_target(
+            PLAIN,
+            ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+            Box::new(terminal.writer()),
+        );
+        events(&reporter);
+        drop(reporter);
+        terminal.lines()
+    }
+
+    fn starting(title: &str) -> ProgressEvent {
+        ProgressEvent::DownloadStarting {
+            download_id: 0,
+            episode_title: title.to_string(),
+            episode_index: 0,
+            total_to_download: 1,
+            content_length: Some(100),
+        }
+    }
+
+    #[test]
+    fn a_live_warning_leaves_no_progress_line_behind() {
+        let screen = screen_after(100, |reporter| {
+            reporter.report(ProgressEvent::ScanningDirectory {
+                files_scanned: 0,
+                total_files: 1,
+            });
+            reporter.report(ProgressEvent::ScanningDirectory {
+                files_scanned: 1,
+                total_files: 1,
+            });
+            reporter.report(ProgressEvent::MetadataUnreadable {
+                path: PathBuf::from("Retro-Talk/Old Episode.json"),
+                reason: "key must be a string at line 1 column 3".to_string(),
+            });
+            reporter.report(ProgressEvent::SyncPlanReady {
+                podcast_title: "Retro Talk".to_string(),
+                total_episodes: 1,
+                new_episodes: 1,
+                to_download: 1,
+                repairs: 0,
+            });
+            reporter.report(ProgressEvent::SyncCompleted);
+        });
+
+        assert!(
+            screen
+                .iter()
+                .any(|line| line.contains("Could not read episode metadata")),
+            "the warning is on the screen:\n{screen:#?}"
+        );
+        assert!(
+            !screen
+                .iter()
+                .any(|line| line.contains("Scanning existing episodes")),
+            "stale bar left behind:\n{screen:#?}"
+        );
+    }
+
+    #[test]
+    fn a_warning_with_an_ascii_mark_leaves_the_virtual_terminal_clean_either_way() {
+        // Without the selector there is nothing to miscount, so the screen
+        // is clean however the line is printed. This is what the real
+        // terminal showed for `[!] ` and `📁 `, and what keeps the virtual
+        // terminal honest.
+        let terminal = VirtualTerminal::new(100);
+        let reporter = IndicatifReporter::with_target(
+            Env {
+                color: false,
+                utf8: false,
+            },
+            ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+            Box::new(terminal.writer()),
+        );
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: 0,
+            total_files: 1,
+        });
+        reporter.report(ProgressEvent::MetadataUnreadable {
+            path: PathBuf::from("Retro-Talk/Old Episode.json"),
+            reason: "key must be a string".to_string(),
+        });
+        reporter.report(ProgressEvent::SyncCompleted);
+        drop(reporter);
+
+        assert_eq!(
+            terminal.lines(),
+            vec![
+                "[!] Could not read episode metadata Retro-Talk/Old Episode.json (key must be a \
+                 string)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_slow_disk_warning_leaves_no_progress_line_behind() {
+        let screen = screen_after(100, |reporter| {
+            reporter.report(starting("Sega Nomad"));
+            reporter.report(ProgressEvent::DownloadSyncSlow {
+                download_id: 0,
+                episode_title: "Sega Nomad".to_string(),
+                episode_index: 0,
+                total_to_download: 1,
+                threshold: std::time::Duration::from_secs(30),
+            });
+            reporter.report(ProgressEvent::DownloadCompleted {
+                download_id: 0,
+                episode_title: "Sega Nomad".to_string(),
+                bytes_downloaded: 100,
+            });
+            reporter.report(ProgressEvent::SyncCompleted);
+        });
+
+        assert!(
+            screen.iter().any(|line| line.contains("Still writing")),
+            "the warning is on the screen:\n{screen:#?}"
+        );
+        // The warning is wider than the screen and takes two rows; any
+        // other row is a copy of a bar.
+        assert!(screen.len() <= 2, "stale bar left behind:\n{screen:#?}");
+    }
+
+    #[test]
+    fn a_title_with_an_emoji_selector_leaves_no_progress_line_behind() {
+        let screen = screen_after(100, |reporter| {
+            reporter.report(starting("I \u{2764}\u{FE0F} Retro"));
+            reporter.report(ProgressEvent::DownloadProgress {
+                download_id: 0,
+                bytes_downloaded: 50,
+                total_bytes: Some(100),
+            });
+            reporter.report(ProgressEvent::DownloadCompleted {
+                download_id: 0,
+                episode_title: "I \u{2764}\u{FE0F} Retro".to_string(),
+                bytes_downloaded: 100,
+            });
+            reporter.report(ProgressEvent::SyncCompleted);
+        });
+
+        assert_eq!(screen, Vec::<String>::new(), "stale bar left behind");
+    }
+
+    /// A writer whose bytes the test can read afterwards
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_hidden_target_gets_no_live_warning() {
+        let captured = Captured::default();
+        let reporter = IndicatifReporter::with_target(
+            PLAIN,
+            ProgressDrawTarget::hidden(),
+            Box::new(captured.clone()),
+        );
+
+        reporter.report(ProgressEvent::MetadataUnreadable {
+            path: PathBuf::from("Retro-Talk/Old Episode.json"),
+            reason: "key must be a string".to_string(),
+        });
+
+        assert!(captured.0.lock().unwrap().is_empty());
     }
 }
