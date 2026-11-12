@@ -11,8 +11,8 @@ use futures::{FutureExt, StreamExt};
 
 use super::{FailedEpisode, SyncOptions};
 use crate::episode::{
-    DISK_WAIT_SLOW_AFTER, DownloadContext, filename_claim_key, hash_file, stage_download,
-    with_disk_wait_notice,
+    DISK_WAIT_SLOW_AFTER, DownloadContext, SyncSettings, filename_claim_key, hash_file,
+    stage_download, with_disk_wait_notice,
 };
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
@@ -192,9 +192,16 @@ pub(super) async fn download_planned<C: HttpClient>(
     let audio_path = output_dir.join(&audio_filename);
     let metadata_path = output_dir.join(planned.metadata_filename());
 
-    let staged_audio = stage_download(client, episode, &audio_path, context, reporter)
-        .await
-        .map_err(|e| e.to_string())?;
+    let staged_audio = stage_download(
+        client,
+        episode,
+        &audio_path,
+        context,
+        reporter,
+        &SyncSettings::default(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // An entry re-issued under a new GUID with audio stored byte for byte
     // adds that GUID to the stored episode instead of a copy. Every other

@@ -3,15 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use sha2::{Digest, Sha256};
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 
 use super::disk_wait::{DISK_WAIT_SLOW_AFTER, with_disk_wait_notice};
-use super::hash::content_hash;
+use super::partial::{FinishedPartial, PartialWriter, SyncFn};
 use crate::error::DownloadError;
 use crate::feed::Episode;
 use crate::fs_sync::sync_file;
@@ -37,7 +35,7 @@ pub struct DownloadContext {
 /// audio becomes visible, so an interruption never leaves audio without
 /// metadata behind.
 #[derive(Debug)]
-pub struct StagedDownload {
+pub(crate) struct StagedDownload {
     partial_path: PathBuf,
     final_path: PathBuf,
     bytes_downloaded: u64,
@@ -45,8 +43,19 @@ pub struct StagedDownload {
 }
 
 impl StagedDownload {
+    /// Stage a partial file whose data is on stable storage for `final_path`
+    fn new(finished: FinishedPartial, final_path: &Path) -> Self {
+        let (partial_path, bytes_downloaded, content_hash) = finished.into_parts();
+        Self {
+            partial_path,
+            final_path: final_path.to_path_buf(),
+            bytes_downloaded,
+            content_hash,
+        }
+    }
+
     /// SHA-256 hash of the downloaded content (format: "sha256:...")
-    pub fn content_hash(&self) -> &str {
+    pub(crate) fn content_hash(&self) -> &str {
         &self.content_hash
     }
 
@@ -55,7 +64,7 @@ impl StagedDownload {
     ///
     /// If the rename fails, the partial file stays behind and the next
     /// directory scan reports it.
-    pub async fn finalize(self) -> Result<u64, DownloadError> {
+    pub(crate) async fn finalize(self) -> Result<u64, DownloadError> {
         tokio::fs::rename(&self.partial_path, &self.final_path)
             .await
             .map_err(|e| DownloadError::RenameFailed {
@@ -70,50 +79,44 @@ impl StagedDownload {
     ///
     /// A partial file that cannot be removed here is removed by the next
     /// directory scan.
-    pub async fn discard(self) {
+    pub(crate) async fn discard(self) {
         let _ = tokio::fs::remove_file(&self.partial_path).await;
+    }
+}
+
+/// How a download syncs its partial file
+#[derive(Clone)]
+pub(crate) struct SyncSettings {
+    /// Flushes a file to stable storage
+    pub(crate) sync: SyncFn,
+    /// How long a sync may take before the display says that the disk is slow
+    pub(crate) slow_after: Duration,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            sync: Arc::new(sync_file),
+            slow_after: DISK_WAIT_SLOW_AFTER,
+        }
     }
 }
 
 /// Download an episode into the partial file next to `output_path`
 ///
 /// Streams the response body to disk while computing a SHA-256 hash. The
-/// audio reaches `output_path` only through [`StagedDownload::finalize`].
-pub async fn stage_download<C: HttpClient>(
+/// audio reaches `output_path` only through [`StagedDownload::finalize`],
+/// after the partial file was synced to stable storage with `settings`.
+pub(crate) async fn stage_download<C: HttpClient>(
     client: &C,
     episode: &Episode,
     output_path: &Path,
     context: &DownloadContext,
     reporter: &dyn ProgressReporter,
-) -> Result<StagedDownload, DownloadError> {
-    stage_download_with(
-        client,
-        episode,
-        output_path,
-        context,
-        reporter,
-        DISK_WAIT_SLOW_AFTER,
-        sync_file,
-    )
-    .await
-}
-
-/// [`stage_download`] with the sync of the finished file and the time after
-/// which a wait for it counts as slow chosen by the caller
-///
-/// Lets tests hold the sync until they release it.
-pub(crate) async fn stage_download_with<C: HttpClient>(
-    client: &C,
-    episode: &Episode,
-    output_path: &Path,
-    context: &DownloadContext,
-    reporter: &dyn ProgressReporter,
-    slow_after: Duration,
-    sync: impl FnOnce(&std::fs::File) -> std::io::Result<()> + Send + 'static,
+    settings: &SyncSettings,
 ) -> Result<StagedDownload, DownloadError> {
     let url = episode.enclosure.url.as_str();
 
-    // Get streaming response
     let response = client
         .get_stream(url)
         .await
@@ -122,7 +125,6 @@ pub(crate) async fn stage_download_with<C: HttpClient>(
             source: e,
         })?;
 
-    // Check for HTTP errors
     if response.status >= 400 {
         return Err(DownloadError::HttpStatus {
             url: url.to_string(),
@@ -130,7 +132,6 @@ pub(crate) async fn stage_download_with<C: HttpClient>(
         });
     }
 
-    // Report download starting
     reporter.report(ProgressEvent::DownloadStarting {
         download_id: context.download_id,
         episode_title: episode.title.clone(),
@@ -139,83 +140,39 @@ pub(crate) async fn stage_download_with<C: HttpClient>(
         content_length: response.content_length,
     });
 
-    let partial_path = partial_path(output_path);
+    let mut writer =
+        PartialWriter::create(partial_path(output_path), settings.sync.clone()).await?;
 
-    // Within a sync, the directory scan removes leftover partial files before
-    // any download starts, so an existing one belongs to another download
-    // targeting the same path. Opening exclusively turns such a conflict into
-    // an error instead of two downloads interleaving their bytes in one file.
-    let mut file = File::create_new(&partial_path).await.map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            DownloadError::PartialFileExists {
-                path: partial_path.clone(),
-            }
-        } else {
-            DownloadError::FileCreateFailed {
-                path: partial_path.clone(),
-                source: e,
-            }
-        }
-    })?;
-
-    // Initialize hasher for streaming hash computation
-    let mut hasher = Sha256::new();
-
-    // Stream body to file while computing hash
-    let mut bytes_downloaded: u64 = 0;
     let mut stream = response.body;
-
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| DownloadError::StreamFailed {
             url: url.to_string(),
             source: e,
         })?;
 
-        // Update hash with chunk data
-        hasher.update(&chunk);
+        writer.write(&chunk).await?;
 
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| DownloadError::FileWriteFailed {
-                path: partial_path.clone(),
-                source: e,
-            })?;
-
-        bytes_downloaded += chunk.len() as u64;
-
-        // Report progress
         reporter.report(ProgressEvent::DownloadProgress {
             download_id: context.download_id,
-            bytes_downloaded,
+            bytes_downloaded: writer.bytes_written(),
             total_bytes: response.content_length,
         });
     }
 
     // Without syncing, a power loss or a crashed file server could persist
     // the later rename before the data and leave a truncated file under the
-    // final name. Flushing first hands every buffered write to the file, so
-    // the synchronous sync sees all of them.
-    let write_failed = |e| DownloadError::FileWriteFailed {
-        path: partial_path.clone(),
-        source: e,
-    };
-    file.flush().await.map_err(write_failed)?;
-    let file = file.into_std().await;
-    let sync_work = async {
-        tokio::task::spawn_blocking(move || sync(&file))
-            .await
-            .map_err(std::io::Error::other)?
-    };
-    with_disk_wait_notice(sync_work, context, &episode.title, reporter, slow_after)
-        .await
-        .map_err(write_failed)?;
+    // final name.
+    let flushed = writer.finish().await?;
+    let finished = with_disk_wait_notice(
+        flushed.synced(),
+        context,
+        &episode.title,
+        reporter,
+        settings.slow_after,
+    )
+    .await?;
 
-    Ok(StagedDownload {
-        partial_path,
-        final_path: output_path.to_path_buf(),
-        bytes_downloaded,
-        content_hash: content_hash(hasher),
-    })
+    Ok(StagedDownload::new(finished, output_path))
 }
 
 #[cfg(test)]
@@ -292,9 +249,16 @@ mod tests {
         };
         let reporter = NoopReporter;
 
-        let staged = stage_download(&client, &episode, &output_path, &context, &reporter)
-            .await
-            .unwrap();
+        let staged = stage_download(
+            &client,
+            &episode,
+            &output_path,
+            &context,
+            &reporter,
+            &SyncSettings::default(),
+        )
+        .await
+        .unwrap();
         assert!(staged.content_hash().starts_with("sha256:"));
         let bytes_downloaded = staged.finalize().await.unwrap();
 
@@ -325,7 +289,15 @@ mod tests {
         };
         let reporter = NoopReporter;
 
-        let result = stage_download(&client, &episode, &output_path, &context, &reporter).await;
+        let result = stage_download(
+            &client,
+            &episode,
+            &output_path,
+            &context,
+            &reporter,
+            &SyncSettings::default(),
+        )
+        .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -360,6 +332,7 @@ mod tests {
             &output_path,
             &context,
             &NoopReporter,
+            &SyncSettings::default(),
         )
         .await;
 
@@ -394,6 +367,7 @@ mod tests {
             &output_path,
             &context,
             &NoopReporter,
+            &SyncSettings::default(),
         )
         .await
         .unwrap();
@@ -429,6 +403,7 @@ mod tests {
             &output_path,
             &context(),
             &NoopReporter,
+            &SyncSettings::default(),
         )
         .await
         .unwrap();
@@ -455,6 +430,7 @@ mod tests {
             &output_path,
             &context(),
             &NoopReporter,
+            &SyncSettings::default(),
         )
         .await
         .unwrap();
@@ -470,6 +446,7 @@ mod tests {
         let output_path = dir.path().join("episode.mp3");
         let partial_path = dir.path().join("episode.mp3.partial");
         let (open_gate, closed_gate) = gate();
+        let closed_gate = std::sync::Mutex::new(closed_gate);
         let seen_while_slow = std::sync::Arc::new(std::sync::Mutex::new(None));
         let reporter = {
             let (output_path, partial_path) = (output_path.clone(), partial_path.clone());
@@ -483,14 +460,22 @@ mod tests {
 
         let staged = tokio::time::timeout(
             GATE_TIMEOUT,
-            stage_download_with(
+            stage_download(
                 &ok_client(),
                 &make_episode(),
                 &output_path,
                 &context(),
                 &reporter,
-                Duration::ZERO,
-                move |_| closed_gate.recv().map_err(std::io::Error::other),
+                &SyncSettings {
+                    sync: Arc::new(move |_| {
+                        closed_gate
+                            .lock()
+                            .unwrap()
+                            .recv()
+                            .map_err(std::io::Error::other)
+                    }),
+                    slow_after: Duration::ZERO,
+                },
             ),
         )
         .await
@@ -512,14 +497,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let output_path = dir.path().join("episode.mp3");
 
-        let result = stage_download_with(
+        let result = stage_download(
             &ok_client(),
             &make_episode(),
             &output_path,
             &context(),
             &NoopReporter,
-            DISK_WAIT_SLOW_AFTER,
-            |_| Err(std::io::Error::from_raw_os_error(libc::EIO)),
+            &SyncSettings {
+                sync: Arc::new(|_| Err(std::io::Error::from_raw_os_error(libc::EIO))),
+                slow_after: DISK_WAIT_SLOW_AFTER,
+            },
         )
         .await;
 

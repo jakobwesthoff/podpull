@@ -28,7 +28,7 @@ During the sync the progress bar stood at 100 % and showed nothing else, which l
 
 **While waiting, the bar reads "Writing to disk"** in front of the episode title. The bar text is cut at the terminal width, so the title is shortened and the wording is not.
 
-**The wait notice is generic over the waited future.** `with_disk_wait_notice` takes the future and the threshold, so the audio sync and the metadata sync share it. `stage_download_with` takes the sync function and the threshold as arguments, which lets tests hold a sync until they release it.
+**The wait notice is generic over the waited future.** `with_disk_wait_notice` takes the future and the time after which the wait counts as slow, so the audio sync and the metadata sync share it. `stage_download` takes `SyncSettings`, which hold the sync function and that time, so tests can hold a sync until they release it.
 
 ## Consequences
 
