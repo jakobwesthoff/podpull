@@ -10,6 +10,8 @@ Extends [4. Async runtime and HTTP client](0004-async-runtime-and-http-client.md
 
 Amended by [17. Distinct filenames for episodes sharing title and date](0017-distinct-filenames-for-episodes-sharing-title-and-date.md)
 
+Amended by [21. Carry HTTP failures as HttpError](0021-carry-http-failures-as-httperror.md)
+
 ## Context
 
 ADR-0004 selected `reqwest` as the HTTP client. However, directly using `reqwest::Client` throughout the library creates problems:

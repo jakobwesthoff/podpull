@@ -217,7 +217,7 @@ mod tests {
     use crate::episode::hash::hash_file;
     use crate::episode::test_support::{GATE_TIMEOUT, GateReporter, gate};
     use crate::feed::Enclosure;
-    use crate::http::{ByteStream, HttpResponse};
+    use crate::http::{ByteStream, HttpError, HttpResponse};
     use crate::progress::NoopReporter;
     use async_trait::async_trait;
     use bytes::Bytes;
@@ -232,11 +232,11 @@ mod tests {
 
     #[async_trait]
     impl HttpClient for MockHttpClient {
-        async fn get_bytes(&self, _url: &str) -> Result<Bytes, reqwest::Error> {
+        async fn get_bytes(&self, _url: &str) -> Result<Bytes, HttpError> {
             Ok(Bytes::from(self.response_data.clone()))
         }
 
-        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, reqwest::Error> {
+        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, HttpError> {
             let data = self.response_data.clone();
             let len = data.len() as u64;
 
@@ -566,11 +566,11 @@ mod tests {
 
     #[async_trait]
     impl HttpClient for ChunkedClient {
-        async fn get_bytes(&self, _url: &str) -> Result<Bytes, reqwest::Error> {
+        async fn get_bytes(&self, _url: &str) -> Result<Bytes, HttpError> {
             unreachable!("downloads stream their body")
         }
 
-        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, reqwest::Error> {
+        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, HttpError> {
             let chunk = Bytes::from(vec![b'a'; self.chunk_len]);
             let body: ByteStream = Box::pin(futures::stream::iter(
                 (0..self.chunks).map(move |_| Ok(chunk.clone())),

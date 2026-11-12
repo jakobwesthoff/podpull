@@ -251,7 +251,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
 
-    use crate::http::{ByteStream, HttpResponse};
+    use crate::http::{ByteStream, HttpError, HttpResponse};
     use crate::progress::{NoopReporter, ProgressReporter};
     use async_trait::async_trait;
     use bytes::Bytes;
@@ -283,7 +283,7 @@ mod tests {
 
     #[async_trait]
     impl HttpClient for MockHttpClient {
-        async fn get_bytes(&self, url: &str) -> Result<Bytes, reqwest::Error> {
+        async fn get_bytes(&self, url: &str) -> Result<Bytes, HttpError> {
             if url.ends_with(".xml") || url.contains("feed") {
                 Ok(Bytes::from(self.feed_xml.clone()))
             } else {
@@ -291,7 +291,7 @@ mod tests {
             }
         }
 
-        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, reqwest::Error> {
+        async fn get_stream(&self, _url: &str) -> Result<HttpResponse, HttpError> {
             let data = self.audio_data.clone();
             let len = data.len() as u64;
 
@@ -515,11 +515,11 @@ mod tests {
 
     #[async_trait]
     impl HttpClient for DistinctAudioClient {
-        async fn get_bytes(&self, url: &str) -> Result<Bytes, reqwest::Error> {
+        async fn get_bytes(&self, url: &str) -> Result<Bytes, HttpError> {
             self.0.get_bytes(url).await
         }
 
-        async fn get_stream(&self, url: &str) -> Result<HttpResponse, reqwest::Error> {
+        async fn get_stream(&self, url: &str) -> Result<HttpResponse, HttpError> {
             let data = Bytes::from(format!("audio of {}", url));
             let len = data.len() as u64;
             let stream: ByteStream = Box::pin(futures::stream::once(async move { Ok(data) }));
@@ -1809,11 +1809,11 @@ mod tests {
 
     #[async_trait]
     impl HttpClient for BorrowingClient<'_> {
-        async fn get_bytes(&self, url: &str) -> Result<Bytes, reqwest::Error> {
+        async fn get_bytes(&self, url: &str) -> Result<Bytes, HttpError> {
             self.inner.get_bytes(url).await
         }
 
-        async fn get_stream(&self, url: &str) -> Result<HttpResponse, reqwest::Error> {
+        async fn get_stream(&self, url: &str) -> Result<HttpResponse, HttpError> {
             self.inner.get_stream(url).await
         }
     }

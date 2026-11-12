@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::http::HttpError;
+
 /// Errors that can occur when fetching or parsing RSS feeds
 #[derive(Error, Debug)]
 pub enum FeedError {
@@ -12,7 +14,7 @@ pub enum FeedError {
     FetchFailed {
         url: String,
         #[source]
-        source: reqwest::Error,
+        source: HttpError,
     },
 
     #[error("Failed to read feed file {path}: {source}")]
@@ -42,7 +44,7 @@ pub enum DownloadError {
     HttpFailed {
         url: String,
         #[source]
-        source: reqwest::Error,
+        source: HttpError,
     },
 
     #[error("HTTP error {status} for {url}")]
@@ -71,7 +73,7 @@ pub enum DownloadError {
     StreamFailed {
         url: String,
         #[source]
-        source: reqwest::Error,
+        source: HttpError,
     },
 
     #[error("Failed to rename {partial_path} to {final_path}: {source}")]
