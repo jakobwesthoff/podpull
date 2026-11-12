@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-11-12
+
 ### Fixed
 
 - When a download has to wait for the disk after its last byte, the progress line says that the file is being written, instead of staying at 100 % without a sign. After 30 seconds, or when a wait during the download lasts that long, it says that the disk is slow and names a slow or network file system as the likely reason, and podpull keeps waiting
