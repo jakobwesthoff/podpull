@@ -266,12 +266,15 @@ cd podpull
 # Build
 cargo build --release
 
-# Run tests
-cargo test
+# Run the checks every commit has to pass: formatting, lints, tests
+just check
 
 # Run from source
 cargo run -- https://example.com/feed.xml ./output/
 ```
+
+The development tasks are the recipes of the `Justfile`; `just --list`
+shows them. `just coverage` needs `cargo-llvm-cov`.
 
 ## License
 
