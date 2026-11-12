@@ -5,25 +5,11 @@
 //! The terminal side of the binary: the progress display and the messages
 //! it prints.
 
+pub(crate) mod env;
 pub(crate) mod messages;
 pub(crate) mod reporter;
 
-use console::Emoji;
-
-// Emoji with fallback for terminals without Unicode support
-pub(crate) static MICROPHONE: Emoji<'_, '_> = Emoji("🎙️  ", "");
-pub(crate) static GLOBE: Emoji<'_, '_> = Emoji("🌐 ", "[w] ");
-pub(crate) static SCROLL: Emoji<'_, '_> = Emoji("📜 ", "[*] ");
-pub(crate) static SEARCH: Emoji<'_, '_> = Emoji("🔍 ", "[~] ");
-pub(crate) static HEADPHONES: Emoji<'_, '_> = Emoji("🎧 ", "[i] ");
-pub(crate) static SAVING: Emoji<'_, '_> = Emoji("💾 ", "[v] ");
-pub(crate) static SUCCESS: Emoji<'_, '_> = Emoji("✅ ", "[+] ");
-pub(crate) static FAILURE: Emoji<'_, '_> = Emoji("❌ ", "[!] ");
-pub(crate) static PARTY: Emoji<'_, '_> = Emoji("🎉 ", "[*] ");
-pub(crate) static FOLDER: Emoji<'_, '_> = Emoji("📁 ", "");
-pub(crate) static CROSS: Emoji<'_, '_> = Emoji("✗ ", "x ");
-pub(crate) static BROOM: Emoji<'_, '_> = Emoji("🧹 ", "[c] ");
-pub(crate) static WARNING: Emoji<'_, '_> = Emoji("⚠️  ", "[!] ");
+pub(crate) use env::{Env, Mark};
 
 #[cfg(test)]
 use podpull::{DamageKind, DamageRemedy, DamagedAudio, FailedEpisode, FailureReason, SyncResult};

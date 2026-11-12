@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use colored::Colorize;
 
 use podpull::{
     AudioCheck, NoopReporter, ProgressReporter, ReqwestClient, SyncOptions, SyncResult,
@@ -17,7 +16,7 @@ mod cli;
 
 use cli::messages::{completion_summary, write_problem_lists};
 use cli::reporter::IndicatifReporter;
-use cli::{FOLDER, MICROPHONE, PARTY};
+use cli::{Env, Mark};
 
 /// Download and synchronize podcasts from RSS feeds
 #[derive(Parser, Debug)]
@@ -77,15 +76,16 @@ fn sync_options(args: &Args) -> SyncOptions {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let env = Env::detect_stdout();
 
     // Quiet output carries only problems, so a script capturing it sees
     // nothing on a clean run.
     if !args.quiet {
         println!(
             "\n{}{} {}\n",
-            MICROPHONE,
-            "podpull".bold().magenta(),
-            "- Podcast Downloader".dimmed()
+            env.mark(Mark::Microphone),
+            env.bold_magenta("podpull"),
+            env.dim("- Podcast Downloader")
         );
     }
 
@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
     let reporter: &dyn ProgressReporter = if args.quiet {
         &NoopReporter
     } else {
-        indicatif = IndicatifReporter::new();
+        indicatif = IndicatifReporter::new(env);
         &indicatif
     };
 
@@ -108,19 +108,21 @@ async fn main() -> Result<()> {
     // Quiet mode suppresses progress, not problems: scripts and cron jobs
     // still see what needs attention, on stderr.
     if args.quiet {
-        write_problem_lists(&result, &mut std::io::stderr())
+        write_problem_lists(&result, &mut std::io::stderr(), &env)
             .context("write the problem lists to stderr")?;
     } else {
         println!(
-            "\n{PARTY}{} {}",
-            "Sync complete:".bold().green(),
-            completion_summary(&result)
+            "\n{}{} {}",
+            env.mark(Mark::Party),
+            env.bold_green("Sync complete:"),
+            completion_summary(&result, &env)
         );
-        write_problem_lists(&result, &mut std::io::stdout())
+        write_problem_lists(&result, &mut std::io::stdout(), &env)
             .context("write the problem lists to stdout")?;
         println!(
-            "\n{FOLDER}Output: {}\n",
-            args.output_dir.display().to_string().cyan()
+            "\n{}Output: {}\n",
+            env.mark(Mark::Folder),
+            env.cyan(args.output_dir.display())
         );
     }
 

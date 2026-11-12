@@ -5,60 +5,49 @@
 use std::io::Write;
 use std::path::Path;
 
-use colored::Colorize;
-
 use podpull::{DamageKind, DamageRemedy, SyncResult};
 
 use super::*;
 
 /// The counts of a finished sync, for its closing line
-pub(crate) fn completion_summary(result: &SyncResult) -> String {
+pub(crate) fn completion_summary(result: &SyncResult, env: &Env) -> String {
     let mut parts = vec![
-        format!(
-            "{} downloaded",
-            result.downloaded.to_string().green().bold()
-        ),
-        format!("{} existing", result.existing.to_string().yellow()),
+        format!("{} downloaded", env.bold_green(result.downloaded)),
+        format!("{} existing", env.yellow(result.existing)),
     ];
 
     if result.repaired > 0 {
-        parts.push(format!("{} repaired", result.repaired.to_string().green()));
+        parts.push(format!("{} repaired", env.green(result.repaired)));
     }
 
     if result.adopted > 0 {
-        parts.push(format!(
-            "{} already stored",
-            result.adopted.to_string().yellow()
-        ));
+        parts.push(format!("{} already stored", env.yellow(result.adopted)));
     }
 
     if result.limited > 0 {
-        parts.push(format!("{} limited", result.limited.to_string().cyan()));
+        parts.push(format!("{} limited", env.cyan(result.limited)));
     }
 
     let failed = result.failed_episodes.len();
     parts.push(if failed > 0 {
-        format!("{} failed", failed.to_string().red().bold())
+        format!("{} failed", env.red_bold(failed))
     } else {
-        format!("{} failed", failed.to_string().green())
+        format!("{} failed", env.green(failed))
     });
 
     if !result.damaged.is_empty() {
-        parts.push(format!(
-            "{} damaged",
-            result.damaged.len().to_string().red().bold()
-        ));
+        parts.push(format!("{} damaged", env.red_bold(result.damaged.len())));
     }
 
     parts.join(", ")
 }
 
 /// Which of the files a check hashes is being read
-pub(crate) fn checking_prefix(position: usize, total: usize) -> String {
+pub(crate) fn checking_prefix(position: usize, total: usize, env: &Env) -> String {
     format!(
         "Checking stored audio [{}/{}]",
-        position.to_string().cyan(),
-        total.to_string().cyan()
+        env.cyan(position),
+        env.cyan(total)
     )
 }
 
@@ -75,22 +64,20 @@ pub(crate) fn plan_message(
     new_episodes: usize,
     to_download: usize,
     repairs: usize,
+    env: &Env,
 ) -> String {
     let mut message = format!(
         "{} • {} total, {} new",
-        podcast_title.bold().green(),
-        total_episodes.to_string().cyan(),
-        new_episodes.to_string().yellow()
+        env.bold_green(podcast_title),
+        env.cyan(total_episodes),
+        env.yellow(new_episodes)
     );
     // Fewer downloads than new episodes means the limit applies.
     if to_download != new_episodes {
-        message.push_str(&format!(
-            ", downloading {}",
-            to_download.to_string().green()
-        ));
+        message.push_str(&format!(", downloading {}", env.green(to_download)));
     }
     if repairs > 0 {
-        message.push_str(&format!(", repairing {}", repairs.to_string().green()));
+        message.push_str(&format!(", repairing {}", env.green(repairs)));
     }
     message
 }
@@ -166,27 +153,28 @@ pub(crate) fn damage_message(
 pub(crate) fn write_problem_lists(
     result: &SyncResult,
     out: &mut impl Write,
+    env: &Env,
 ) -> std::io::Result<()> {
     if !result.failed_episodes.is_empty() {
-        writeln!(out, "\n{}", "Failed episodes:".red().bold())?;
+        writeln!(out, "\n{}", env.red_bold("Failed episodes:"))?;
         for failed in &result.failed_episodes {
             writeln!(
                 out,
                 "  {}{} - {}",
-                CROSS,
-                failed.title.yellow(),
-                failed.reason.root.dimmed()
+                env.mark(Mark::Cross),
+                env.yellow(&failed.title),
+                env.dim(&failed.reason.root)
             )?;
         }
     }
 
     if !result.damaged.is_empty() {
-        writeln!(out, "\n{}", "Damaged episodes:".red().bold())?;
+        writeln!(out, "\n{}", env.red_bold("Damaged episodes:"))?;
         for damaged in &result.damaged {
             writeln!(
                 out,
                 "  {}{}",
-                CROSS,
+                env.mark(Mark::Cross),
                 damage_message(
                     &damaged.episode_title,
                     &damaged.audio_filename,
@@ -210,9 +198,9 @@ pub(crate) fn write_problem_lists(
             }))
             .collect();
     if !warnings.is_empty() {
-        writeln!(out, "\n{}", "Warnings:".yellow().bold())?;
+        writeln!(out, "\n{}", env.yellow_bold("Warnings:"))?;
         for warning in warnings {
-            writeln!(out, "  {}{}", WARNING, warning)?;
+            writeln!(out, "  {}{}", env.mark(Mark::Warning), warning)?;
         }
     }
     Ok(())
@@ -221,34 +209,43 @@ pub(crate) fn write_problem_lists(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PLAIN: Env = Env {
+        color: false,
+        utf8: true,
+    };
+    const COLOURED: Env = Env {
+        color: true,
+        utf8: true,
+    };
     use crate::cli::test_result as result;
     use podpull::UnverifiableAudio;
     use std::path::PathBuf;
 
     #[test]
     fn plan_message_shows_only_new_episodes_without_limit_or_repairs() {
-        colored::control::set_override(false);
-        assert_eq!(plan_message("Show", 10, 2, 2, 0), "Show • 10 total, 2 new");
+        assert_eq!(
+            plan_message("Show", 10, 2, 2, 0, &PLAIN),
+            "Show • 10 total, 2 new"
+        );
     }
 
     #[test]
     fn plan_message_shows_the_limit() {
-        colored::control::set_override(false);
         assert_eq!(
-            plan_message("Show", 10, 2, 1, 0),
+            plan_message("Show", 10, 2, 1, 0, &PLAIN),
             "Show • 10 total, 2 new, downloading 1"
         );
     }
 
     #[test]
     fn plan_message_shows_repairs_apart_from_the_limit() {
-        colored::control::set_override(false);
         assert_eq!(
-            plan_message("Show", 10, 2, 2, 1),
+            plan_message("Show", 10, 2, 2, 1, &PLAIN),
             "Show • 10 total, 2 new, repairing 1"
         );
         assert_eq!(
-            plan_message("Show", 10, 2, 1, 1),
+            plan_message("Show", 10, 2, 1, 1, &PLAIN),
             "Show • 10 total, 2 new, downloading 1, repairing 1"
         );
     }
@@ -366,9 +363,10 @@ mod tests {
 
     #[test]
     fn checking_prefix_counts_the_checked_files() {
-        colored::control::set_override(false);
-
-        assert_eq!(checking_prefix(12, 162), "Checking stored audio [12/162]");
+        assert_eq!(
+            checking_prefix(12, 162, &PLAIN),
+            "Checking stored audio [12/162]"
+        );
     }
 
     #[test]
@@ -382,16 +380,17 @@ mod tests {
 
     #[test]
     fn completion_summary_lists_repairs_recorded_guids_and_the_limit() {
-        colored::control::set_override(false);
-
-        let summary = completion_summary(&SyncResult {
-            downloaded: 4,
-            existing: 5,
-            repaired: 2,
-            adopted: 1,
-            limited: 3,
-            ..Default::default()
-        });
+        let summary = completion_summary(
+            &SyncResult {
+                downloaded: 4,
+                existing: 5,
+                repaired: 2,
+                adopted: 1,
+                limited: 3,
+                ..Default::default()
+            },
+            &PLAIN,
+        );
 
         assert_eq!(
             summary,
@@ -401,7 +400,6 @@ mod tests {
 
     #[test]
     fn problem_lists_name_warnings() {
-        colored::control::set_override(false);
         let mut with_warnings = result(1, 0, 0);
         with_warnings.stuck_partial_files = vec![PathBuf::from("/podcasts/a.mp3.partial")];
         with_warnings.unverifiable_audio = vec![UnverifiableAudio {
@@ -410,7 +408,7 @@ mod tests {
         }];
         let mut out = Vec::new();
 
-        write_problem_lists(&with_warnings, &mut out).unwrap();
+        write_problem_lists(&with_warnings, &mut out, &PLAIN).unwrap();
 
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("Warnings:"));
@@ -422,10 +420,9 @@ mod tests {
 
     #[test]
     fn problem_lists_name_failed_and_damaged_episodes() {
-        colored::control::set_override(false);
         let mut out = Vec::new();
 
-        write_problem_lists(&result(1, 1, 1), &mut out).unwrap();
+        write_problem_lists(&result(1, 1, 1), &mut out, &PLAIN).unwrap();
 
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("Failed episodes:"));
@@ -439,8 +436,50 @@ mod tests {
     fn problem_lists_are_empty_without_problems() {
         let mut out = Vec::new();
 
-        write_problem_lists(&result(3, 0, 0), &mut out).unwrap();
+        write_problem_lists(&result(3, 0, 0), &mut out, &PLAIN).unwrap();
 
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn the_summary_counts_damaged_episodes() {
+        let summary = completion_summary(&result(0, 0, 2), &PLAIN);
+
+        assert_eq!(summary, "0 downloaded, 0 existing, 0 failed, 2 damaged");
+    }
+
+    #[test]
+    fn the_summary_colours_its_counts_when_colour_is_on() {
+        let summary = completion_summary(&result(2, 1, 0), &COLOURED);
+
+        assert_eq!(
+            summary,
+            "\u{1b}[32m\u{1b}[1m2\u{1b}[0m downloaded, \u{1b}[33m0\u{1b}[0m existing, \
+             \u{1b}[31m\u{1b}[1m1\u{1b}[0m failed"
+        );
+    }
+
+    #[test]
+    fn the_plan_colours_its_counts_when_colour_is_on() {
+        let plan = plan_message("Show", 10, 2, 2, 0, &COLOURED);
+
+        assert_eq!(
+            plan,
+            "\u{1b}[32m\u{1b}[1mShow\u{1b}[0m • \u{1b}[36m10\u{1b}[0m total, \
+             \u{1b}[33m2\u{1b}[0m new"
+        );
+    }
+
+    #[test]
+    fn the_problem_lists_colour_their_headings_and_reasons_when_colour_is_on() {
+        let mut out = Vec::new();
+
+        write_problem_lists(&result(0, 1, 0), &mut out, &COLOURED).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\n\u{1b}[31m\u{1b}[1mFailed episodes:\u{1b}[0m\n  \
+             ✗ \u{1b}[33mEpisode 0\u{1b}[0m - \u{1b}[2mHTTP error 404\u{1b}[0m\n"
+        );
     }
 }

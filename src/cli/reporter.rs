@@ -5,7 +5,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use podpull::{ProgressEvent, ProgressReporter};
@@ -20,10 +19,11 @@ pub(crate) struct IndicatifReporter {
     /// Slots whose download already printed the warning about a slow disk
     slow_warned: Mutex<HashSet<usize>>,
     main_bar: ProgressBar,
+    env: Env,
 }
 
 impl IndicatifReporter {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(env: Env) -> Self {
         let multi = MultiProgress::new();
 
         let main_style = ProgressStyle::default_bar()
@@ -39,6 +39,7 @@ impl IndicatifReporter {
             bars: Mutex::new(HashMap::new()),
             slow_warned: Mutex::new(HashSet::new()),
             main_bar,
+            env,
         }
     }
 
@@ -51,7 +52,8 @@ impl IndicatifReporter {
 
         let style = ProgressStyle::default_bar()
             .template(&format!(
-                "  {SAVING}[{{bar:30.cyan/blue}}] {{bytes}}/{{total_bytes}} {{wide_msg}}"
+                "  {}[{{bar:30.cyan/blue}}] {{bytes}}/{{total_bytes}} {{wide_msg}}",
+                self.env.mark(Mark::Saving)
             ))
             .unwrap()
             .progress_chars("█▓░");
@@ -90,6 +92,7 @@ impl IndicatifReporter {
                 total_to_download,
                 status,
                 episode_title,
+                &self.env,
             ));
     }
 
@@ -105,13 +108,19 @@ impl ProgressReporter for IndicatifReporter {
     fn report(&self, event: ProgressEvent) {
         match event {
             ProgressEvent::FetchingFeed { url } => {
-                self.main_bar
-                    .set_message(format!("{GLOBE}Fetching feed: {}", url.cyan()));
+                self.main_bar.set_message(format!(
+                    "{}Fetching feed: {}",
+                    self.env.mark(Mark::Globe),
+                    self.env.cyan(&url)
+                ));
             }
 
             ProgressEvent::ParsingFeed { source } => {
-                self.main_bar
-                    .set_message(format!("{SCROLL}Parsing feed: {}", source.cyan()));
+                self.main_bar.set_message(format!(
+                    "{}Parsing feed: {}",
+                    self.env.mark(Mark::Scroll),
+                    self.env.cyan(&source)
+                ));
             }
 
             ProgressEvent::ScanningDirectory {
@@ -119,14 +128,16 @@ impl ProgressReporter for IndicatifReporter {
                 total_files,
             } => {
                 if total_files == 0 {
-                    self.main_bar
-                        .set_message(format!("{SEARCH}Scanning existing episodes..."));
+                    self.main_bar.set_message(format!(
+                        "{}Scanning existing episodes...",
+                        self.env.mark(Mark::Search)
+                    ));
                 } else {
                     // Switch to progress bar style for scanning
                     if files_scanned == 0 {
                         let scan_style = ProgressStyle::default_bar()
                             .template(&format!(
-                                "{{spinner:.green}} {SEARCH}Scanning existing episodes... [{{bar:30.cyan/blue}}] {{pos}}/{{len}}"
+                                "{{spinner:.green}} {}Scanning existing episodes... [{{bar:30.cyan/blue}}] {{pos}}/{{len}}", self.env.mark(Mark::Search)
                             ))
                             .unwrap()
                             .progress_chars("█▓░");
@@ -150,13 +161,15 @@ impl ProgressReporter for IndicatifReporter {
                     .unwrap();
                 self.main_bar.set_style(main_style);
                 self.main_bar.set_message(format!(
-                    "{HEADPHONES}{}",
+                    "{}{}",
+                    self.env.mark(Mark::Headphones),
                     plan_message(
                         &podcast_title,
                         total_episodes,
                         new_episodes,
                         to_download,
-                        repairs
+                        repairs,
+                        &self.env
                     )
                 ));
             }
@@ -217,8 +230,10 @@ impl ProgressReporter for IndicatifReporter {
                 // for the wait goes on a line of its own above the bars.
                 if self.first_slow_warning(download_id) {
                     let _ = self.multi.println(format!(
-                        "{WARNING}{}",
-                        slow_sync_warning(&episode_title, threshold).yellow()
+                        "{}{}",
+                        self.env.mark(Mark::Warning),
+                        self.env
+                            .yellow(slow_sync_warning(&episode_title, threshold))
                     ));
                 }
             }
@@ -260,8 +275,9 @@ impl ProgressReporter for IndicatifReporter {
                 // No index displayed, so use 0 for index_width calculation
                 let title_width = available_title_width(0);
                 bar.set_message(format!(
-                    "{SUCCESS}{}",
-                    truncate_title(&episode_title, title_width).green()
+                    "{}{}",
+                    self.env.mark(Mark::Success),
+                    self.env.green(truncate_title(&episode_title, title_width))
                 ));
                 self.finish_bar(download_id);
             }
@@ -275,9 +291,13 @@ impl ProgressReporter for IndicatifReporter {
                 // Reserve space for " - " and some error text (at least 30 chars)
                 let title_width = available_title_width(0).saturating_sub(3 + 30);
                 bar.abandon_with_message(format!(
-                    "{FAILURE}{} - {}",
-                    truncate_title(&episode_title, title_width.max(MIN_TITLE_WIDTH)).red(),
-                    reason.root.red()
+                    "{}{} - {}",
+                    self.env.mark(Mark::Failure),
+                    self.env.red(truncate_title(
+                        &episode_title,
+                        title_width.max(MIN_TITLE_WIDTH)
+                    )),
+                    self.env.red(&reason.root)
                 ));
                 self.finish_bar(download_id);
             }
@@ -285,8 +305,9 @@ impl ProgressReporter for IndicatifReporter {
             ProgressEvent::PartialFilesCleanedUp { count } => {
                 if count > 0 {
                     self.main_bar.set_message(format!(
-                        "{BROOM}Cleaned up {} interrupted download{}",
-                        count.to_string().yellow(),
+                        "{}Cleaned up {} interrupted download{}",
+                        self.env.mark(Mark::Broom),
+                        self.env.yellow(count),
                         if count == 1 { "" } else { "s" }
                     ));
                 }
@@ -299,16 +320,19 @@ impl ProgressReporter for IndicatifReporter {
             } => {
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_message(format!(
-                    "{SUCCESS}{}",
-                    already_stored_message(&episode_title, &audio_filename).green()
+                    "{}{}",
+                    self.env.mark(Mark::Success),
+                    self.env
+                        .green(already_stored_message(&episode_title, &audio_filename))
                 ));
                 self.finish_bar(download_id);
             }
 
             ProgressEvent::PartialFileStuck { path } => {
                 let _ = self.multi.println(format!(
-                    "{WARNING}{}",
-                    stuck_partial_file_message(&path).yellow()
+                    "{}{}",
+                    self.env.mark(Mark::Warning),
+                    self.env.yellow(stuck_partial_file_message(&path))
                 ));
             }
 
@@ -316,8 +340,9 @@ impl ProgressReporter for IndicatifReporter {
                 // Printed above the progress bars so the warning outlives
                 // the transient status line.
                 let _ = self.multi.println(format!(
-                    "{WARNING}{}",
-                    unreadable_metadata_message(&path, &reason).yellow()
+                    "{}{}",
+                    self.env.mark(Mark::Warning),
+                    self.env.yellow(unreadable_metadata_message(&path, &reason))
                 ));
             }
 
@@ -338,9 +363,12 @@ impl ProgressReporter for IndicatifReporter {
                 // previous file go first and the new style last.
                 self.main_bar.set_position(0);
                 self.main_bar.set_length(0);
-                self.main_bar
-                    .set_prefix(format!("{SEARCH}{}", checking_prefix(position, total)));
-                self.main_bar.set_message(audio_filename.cyan().to_string());
+                self.main_bar.set_prefix(format!(
+                    "{}{}",
+                    self.env.mark(Mark::Search),
+                    checking_prefix(position, total, &self.env)
+                ));
+                self.main_bar.set_message(self.env.cyan(&audio_filename));
                 self.main_bar.set_style(check_style);
             }
 
@@ -357,8 +385,10 @@ impl ProgressReporter for IndicatifReporter {
                 reason,
             } => {
                 let _ = self.multi.println(format!(
-                    "{WARNING}{}",
-                    unverifiable_audio_message(&audio_filename, &reason).yellow()
+                    "{}{}",
+                    self.env.mark(Mark::Warning),
+                    self.env
+                        .yellow(unverifiable_audio_message(&audio_filename, &reason))
                 ));
             }
 
@@ -369,8 +399,14 @@ impl ProgressReporter for IndicatifReporter {
                 remedy,
             } => {
                 let _ = self.multi.println(format!(
-                    "{WARNING}{}",
-                    damage_message(&episode_title, &audio_filename, kind, remedy).yellow()
+                    "{}{}",
+                    self.env.mark(Mark::Warning),
+                    self.env.yellow(damage_message(
+                        &episode_title,
+                        &audio_filename,
+                        kind,
+                        remedy
+                    ))
                 ));
             }
 
@@ -400,6 +436,7 @@ fn episode_message(
     total_to_download: usize,
     status: &str,
     episode_title: &str,
+    env: &Env,
 ) -> String {
     let index_width = (episode_index + 1).to_string().len() + total_to_download.to_string().len();
     let title_width = available_title_width(index_width)
@@ -407,8 +444,8 @@ fn episode_message(
         .max(MIN_TITLE_WIDTH);
     format!(
         "[{}/{}] {}{}",
-        (episode_index + 1).to_string().cyan(),
-        total_to_download.to_string().cyan(),
+        env.cyan(episode_index + 1),
+        env.cyan(total_to_download),
         status,
         truncate_title(episode_title, title_width)
     )
@@ -445,11 +482,17 @@ fn available_title_width(index_width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use podpull::FailureReason;
+
+    const PLAIN: Env = Env {
+        color: false,
+        utf8: true,
+    };
     use std::path::PathBuf;
 
     #[test]
     fn the_slow_disk_warning_is_printed_once_per_download() {
-        let reporter = IndicatifReporter::new();
+        let reporter = IndicatifReporter::new(PLAIN);
 
         assert!(reporter.first_slow_warning(0));
         assert!(!reporter.first_slow_warning(0));
@@ -489,35 +532,90 @@ mod tests {
 
     #[test]
     fn episode_message_puts_the_status_between_the_place_and_the_title() {
-        colored::control::set_override(false);
-
-        assert_eq!(episode_message(0, 3, "", "Sega Nomad"), "[1/3] Sega Nomad");
         assert_eq!(
-            episode_message(0, 3, SYNCING_STATUS, "Sega Nomad"),
+            episode_message(0, 3, "", "Sega Nomad", &PLAIN),
+            "[1/3] Sega Nomad"
+        );
+        assert_eq!(
+            episode_message(0, 3, SYNCING_STATUS, "Sega Nomad", &PLAIN),
             "[1/3] Writing to disk: Sega Nomad"
         );
         assert_eq!(
-            episode_message(1, 3, SLOW_SYNC_STATUS, "Sega Nomad"),
+            episode_message(1, 3, SLOW_SYNC_STATUS, "Sega Nomad", &PLAIN),
             "[2/3] Slow disk, still writing: Sega Nomad"
         );
     }
 
     #[test]
     fn episode_message_cuts_a_long_title_and_keeps_the_status() {
-        colored::control::set_override(false);
         let title = "x".repeat(500);
 
-        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &title);
+        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &title, &PLAIN);
 
         assert!(message.starts_with("[1/3] Slow disk, still writing: xxx"));
         assert!(message.ends_with("..."));
     }
 
     #[test]
+    fn reporter_accepts_the_events_of_a_run_without_collisions() {
+        // indicatif draws to the terminal, so this only checks that every
+        // match arm runs.
+        let reporter = IndicatifReporter::new(PLAIN);
+
+        reporter.report(ProgressEvent::FetchingFeed {
+            url: "https://example.com/feed.xml".to_string(),
+        });
+        reporter.report(ProgressEvent::ParsingFeed {
+            source: "https://example.com/feed.xml".to_string(),
+        });
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: 0,
+            total_files: 0,
+        });
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: 0,
+            total_files: 2,
+        });
+        reporter.report(ProgressEvent::ScanningDirectory {
+            files_scanned: 1,
+            total_files: 2,
+        });
+        reporter.report(ProgressEvent::SyncPlanReady {
+            podcast_title: "Show".to_string(),
+            total_episodes: 3,
+            new_episodes: 2,
+            to_download: 2,
+            repairs: 0,
+        });
+        reporter.report(ProgressEvent::PartialFilesCleanedUp { count: 1 });
+        reporter.report(ProgressEvent::DownloadProgress {
+            download_id: 0,
+            bytes_downloaded: 5,
+            total_bytes: Some(10),
+        });
+        reporter.report(ProgressEvent::DownloadCompleted {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            bytes_downloaded: 10,
+        });
+        reporter.report(ProgressEvent::DownloadFailed {
+            download_id: 1,
+            episode_title: "Sega Nomad".to_string(),
+            reason: FailureReason::without_subject("HTTP error 404"),
+        });
+        reporter.report(ProgressEvent::EpisodeAlreadyStored {
+            download_id: 2,
+            episode_title: "Sega Nomad".to_string(),
+            audio_filename: "2024-12-19-Sega Nomad.mp3".to_string(),
+        });
+        reporter.report(ProgressEvent::SyncCompleted);
+    }
+
+    #[test]
     fn reporter_accepts_collision_events() {
         // indicatif draws to the terminal, so this only checks that every
         // match arm runs; the message texts are asserted by the helper tests.
-        let reporter = IndicatifReporter::new();
+        let reporter = IndicatifReporter::new(PLAIN);
 
         reporter.report(ProgressEvent::DownloadStarting {
             download_id: 0,
@@ -584,21 +682,20 @@ mod tests {
         // character followed by U+FE0F one column narrower than the terminal
         // draws it. The line then wraps, and every redraw leaves the previous
         // frame behind.
-        let progress_emoji = [
-            ("SAVING", SAVING),
-            ("GLOBE", GLOBE),
-            ("SCROLL", SCROLL),
-            ("SEARCH", SEARCH),
-            ("HEADPHONES", HEADPHONES),
-            ("SUCCESS", SUCCESS),
-            ("FAILURE", FAILURE),
-            ("BROOM", BROOM),
+        let progress_marks = [
+            Mark::Saving,
+            Mark::Globe,
+            Mark::Scroll,
+            Mark::Search,
+            Mark::Headphones,
+            Mark::Success,
+            Mark::Failure,
+            Mark::Broom,
         ];
 
-        let with_selector: Vec<_> = progress_emoji
+        let with_selector: Vec<_> = progress_marks
             .iter()
-            .filter(|(_, emoji)| emoji.0.contains('\u{FE0F}'))
-            .map(|(name, _)| *name)
+            .filter(|mark| mark.symbols().0.contains('\u{FE0F}'))
             .collect();
 
         assert!(with_selector.is_empty(), "{:?}", with_selector);
