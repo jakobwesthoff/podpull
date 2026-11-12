@@ -584,12 +584,13 @@ fn damage_message(
     )
 }
 
+/// Shorten a title to `max_len` terminal columns, ending in "..." when it
+/// had to be cut
+///
+/// Cuts between characters and counts the columns the terminal shows, since
+/// titles hold multi-byte characters such as umlauts and dashes.
 fn truncate_title(title: &str, max_len: usize) -> String {
-    if title.len() <= max_len {
-        title.to_string()
-    } else {
-        format!("{}...", &title[..max_len.saturating_sub(3)])
-    }
+    console::truncate_str(title, max_len, "...").into_owned()
 }
 
 /// Calculate available width for episode title in progress bar
@@ -799,6 +800,25 @@ mod tests {
             "Could not remove the leftover partial file /podcasts/2024-01-15-Episode.mp3.partial; \
              its episode cannot be downloaded until it is deleted"
         );
+    }
+
+    #[test]
+    fn truncate_title_keeps_a_title_that_fits() {
+        assert_eq!(truncate_title("Sega Nomad", 10), "Sega Nomad");
+        assert_eq!(truncate_title("Größe", 5), "Größe");
+    }
+
+    #[test]
+    fn truncate_title_cuts_ascii_with_an_ellipsis() {
+        assert_eq!(truncate_title("Sega Nomad Special", 10), "Sega No...");
+    }
+
+    #[test]
+    fn truncate_title_cuts_before_a_multi_byte_character_instead_of_inside_it() {
+        // The cut at byte 2 falls inside the first "ä" (bytes 1 and 2).
+        assert_eq!(truncate_title("Mädchen ääää", 5), "Mä...");
+        // The cut at byte 6 falls inside the en dash (bytes 5 to 7).
+        assert_eq!(truncate_title("Trek – Folge 499", 9), "Trek –...");
     }
 
     #[test]
