@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::damage::{DamageKind, DamageRemedy};
 
@@ -57,6 +58,41 @@ pub enum ProgressEvent {
         download_id: usize,
         bytes_downloaded: u64,
         total_bytes: Option<u64>,
+    },
+
+    /// A file of a download is being written to the disk and podpull waits
+    /// for the file system to confirm it
+    ///
+    /// Happens after the last byte of the audio arrived and again for the
+    /// episode metadata. On a network share the wait can take minutes.
+    DownloadSyncing {
+        /// Identifies the download slot
+        download_id: usize,
+        episode_title: String,
+        /// Index of this episode in the download queue
+        episode_index: usize,
+        /// Total number of episodes to download
+        total_to_download: usize,
+    },
+
+    /// The wait announced by `DownloadSyncing` has lasted longer than
+    /// `threshold`; podpull keeps waiting
+    DownloadSyncSlow {
+        download_id: usize,
+        episode_title: String,
+        episode_index: usize,
+        total_to_download: usize,
+        /// How long the wait had lasted when this event was reported
+        threshold: Duration,
+    },
+
+    /// The wait announced by `DownloadSyncing` ended, whether the file
+    /// system confirmed the write or reported an error
+    DownloadSynced {
+        download_id: usize,
+        episode_title: String,
+        episode_index: usize,
+        total_to_download: usize,
     },
 
     /// A download completed successfully
@@ -188,6 +224,28 @@ mod tests {
             download_id: 0,
             bytes_downloaded: 512,
             total_bytes: Some(1024),
+        });
+
+        reporter.report(ProgressEvent::DownloadSyncing {
+            download_id: 0,
+            episode_title: "Episode 1".to_string(),
+            episode_index: 0,
+            total_to_download: 5,
+        });
+
+        reporter.report(ProgressEvent::DownloadSyncSlow {
+            download_id: 0,
+            episode_title: "Episode 1".to_string(),
+            episode_index: 0,
+            total_to_download: 5,
+            threshold: Duration::from_secs(30),
+        });
+
+        reporter.report(ProgressEvent::DownloadSynced {
+            download_id: 0,
+            episode_title: "Episode 1".to_string(),
+            episode_index: 0,
+            total_to_download: 5,
         });
 
         reporter.report(ProgressEvent::DownloadCompleted {

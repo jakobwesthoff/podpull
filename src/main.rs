@@ -197,16 +197,64 @@ impl ProgressReporter for IndicatifReporter {
                 let bar = self.get_or_create_bar(download_id);
                 bar.set_length(content_length.unwrap_or(0));
                 bar.set_position(0);
-                // Calculate width needed for "[idx/total]" part
-                let index_width =
-                    (episode_index + 1).to_string().len() + total_to_download.to_string().len();
-                let title_width = available_title_width(index_width);
-                bar.set_message(format!(
-                    "[{}/{}] {}",
-                    (episode_index + 1).to_string().cyan(),
-                    total_to_download.to_string().cyan(),
-                    truncate_title(&episode_title, title_width)
+                bar.set_message(episode_message(
+                    episode_index,
+                    total_to_download,
+                    "",
+                    &episode_title,
                 ));
+            }
+
+            ProgressEvent::DownloadSyncing {
+                download_id,
+                episode_title,
+                episode_index,
+                total_to_download,
+            } => {
+                self.get_or_create_bar(download_id)
+                    .set_message(episode_message(
+                        episode_index,
+                        total_to_download,
+                        SYNCING_STATUS,
+                        &episode_title,
+                    ));
+            }
+
+            ProgressEvent::DownloadSyncSlow {
+                download_id,
+                episode_title,
+                episode_index,
+                total_to_download,
+                threshold,
+            } => {
+                self.get_or_create_bar(download_id)
+                    .set_message(episode_message(
+                        episode_index,
+                        total_to_download,
+                        SLOW_SYNC_STATUS,
+                        &episode_title,
+                    ));
+                // The bar text is cut at the terminal width, so the reason
+                // for the wait goes on a line of its own above the bars.
+                let _ = self.multi.println(format!(
+                    "{WARNING}{}",
+                    slow_sync_warning(&episode_title, threshold).yellow()
+                ));
+            }
+
+            ProgressEvent::DownloadSynced {
+                download_id,
+                episode_title,
+                episode_index,
+                total_to_download,
+            } => {
+                self.get_or_create_bar(download_id)
+                    .set_message(episode_message(
+                        episode_index,
+                        total_to_download,
+                        "",
+                        &episode_title,
+                    ));
             }
 
             ProgressEvent::DownloadProgress {
@@ -247,7 +295,7 @@ impl ProgressReporter for IndicatifReporter {
                 let title_width = available_title_width(0).saturating_sub(3 + 30);
                 bar.abandon_with_message(format!(
                     "{FAILURE}{} - {}",
-                    truncate_title(&episode_title, title_width.max(20)).red(),
+                    truncate_title(&episode_title, title_width.max(MIN_TITLE_WIDTH)).red(),
                     error.red()
                 ));
                 self.finish_bar(download_id);
@@ -436,6 +484,48 @@ fn plan_message(
     message
 }
 
+/// Fewest characters of an episode title a progress line keeps
+const MIN_TITLE_WIDTH: usize = 20;
+
+/// Status shown on an episode's bar while podpull waits for the file system
+/// to confirm a write
+const SYNCING_STATUS: &str = "Writing to disk: ";
+
+/// Status shown on an episode's bar once that wait has become slow
+const SLOW_SYNC_STATUS: &str = "Slow disk, still writing: ";
+
+/// Text of an episode's bar: its place in the queue, a status and its title
+///
+/// The title is cut to what the terminal leaves after the status, so the
+/// status is never the part that gets lost.
+fn episode_message(
+    episode_index: usize,
+    total_to_download: usize,
+    status: &str,
+    episode_title: &str,
+) -> String {
+    let index_width = (episode_index + 1).to_string().len() + total_to_download.to_string().len();
+    let title_width = available_title_width(index_width)
+        .saturating_sub(status.len())
+        .max(MIN_TITLE_WIDTH);
+    format!(
+        "[{}/{}] {}{}",
+        (episode_index + 1).to_string().cyan(),
+        total_to_download.to_string().cyan(),
+        status,
+        truncate_title(episode_title, title_width)
+    )
+}
+
+fn slow_sync_warning(episode_title: &str, threshold: std::time::Duration) -> String {
+    format!(
+        "Still writing \"{}\" to the disk after {} s; a slow or network file system is the \
+         likely reason, podpull keeps waiting",
+        episode_title,
+        threshold.as_secs()
+    )
+}
+
 fn stuck_partial_file_message(path: &Path) -> String {
     format!(
         "Could not remove the leftover partial file {}; its episode cannot be downloaded until it is deleted",
@@ -518,7 +608,7 @@ fn available_title_width(index_width: usize) -> usize {
     // - index "[idx/total] ": index_width + 4 brackets/slash + 1 space
     let fixed_width = 2 + 4 + 2 + 30 + 1 + 21 + 1 + index_width + 4 + 1;
 
-    term_width.saturating_sub(fixed_width).max(20) // minimum 20 chars for title
+    term_width.saturating_sub(fixed_width).max(MIN_TITLE_WIDTH)
 }
 
 fn sync_options(args: &Args) -> SyncOptions {
@@ -712,6 +802,41 @@ mod tests {
     }
 
     #[test]
+    fn episode_message_puts_the_status_between_the_place_and_the_title() {
+        colored::control::set_override(false);
+
+        assert_eq!(episode_message(0, 3, "", "Sega Nomad"), "[1/3] Sega Nomad");
+        assert_eq!(
+            episode_message(0, 3, SYNCING_STATUS, "Sega Nomad"),
+            "[1/3] Writing to disk: Sega Nomad"
+        );
+        assert_eq!(
+            episode_message(1, 3, SLOW_SYNC_STATUS, "Sega Nomad"),
+            "[2/3] Slow disk, still writing: Sega Nomad"
+        );
+    }
+
+    #[test]
+    fn episode_message_cuts_a_long_title_and_keeps_the_status() {
+        colored::control::set_override(false);
+        let title = "x".repeat(500);
+
+        let message = episode_message(0, 3, SLOW_SYNC_STATUS, &title);
+
+        assert!(message.starts_with("[1/3] Slow disk, still writing: xxx"));
+        assert!(message.ends_with("..."));
+    }
+
+    #[test]
+    fn slow_sync_warning_names_the_wait_and_its_likely_reason() {
+        assert_eq!(
+            slow_sync_warning("Sega Nomad", std::time::Duration::from_secs(30)),
+            "Still writing \"Sega Nomad\" to the disk after 30 s; a slow or network file \
+             system is the likely reason, podpull keeps waiting"
+        );
+    }
+
+    #[test]
     fn unreadable_metadata_message_names_the_file() {
         assert_eq!(
             unreadable_metadata_message(
@@ -729,6 +854,32 @@ mod tests {
         // match arm runs; the message texts are asserted by the helper tests.
         let reporter = IndicatifReporter::new();
 
+        reporter.report(ProgressEvent::DownloadStarting {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            episode_index: 0,
+            total_to_download: 1,
+            content_length: Some(1024),
+        });
+        reporter.report(ProgressEvent::DownloadSyncing {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            episode_index: 0,
+            total_to_download: 1,
+        });
+        reporter.report(ProgressEvent::DownloadSyncSlow {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            episode_index: 0,
+            total_to_download: 1,
+            threshold: std::time::Duration::from_secs(30),
+        });
+        reporter.report(ProgressEvent::DownloadSynced {
+            download_id: 0,
+            episode_title: "Sega Nomad".to_string(),
+            episode_index: 0,
+            total_to_download: 1,
+        });
         reporter.report(ProgressEvent::PartialFileStuck {
             path: PathBuf::from("/podcasts/2024-01-15-Episode.mp3.partial"),
         });

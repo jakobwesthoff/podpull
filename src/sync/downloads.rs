@@ -10,7 +10,10 @@ use std::sync::Mutex;
 use futures::{FutureExt, StreamExt};
 
 use super::{FailedEpisode, SyncOptions};
-use crate::episode::{DownloadContext, filename_claim_key, hash_file, stage_download};
+use crate::episode::{
+    DISK_WAIT_SLOW_AFTER, DownloadContext, filename_claim_key, hash_file, stage_download,
+    with_disk_wait_notice,
+};
 use crate::http::HttpClient;
 use crate::metadata::{EpisodeMetadata, add_guid_to_episode_metadata};
 use crate::progress::{ProgressEvent, ProgressReporter};
@@ -224,7 +227,14 @@ pub(super) async fn download_planned<C: HttpClient>(
         if let Purpose::Repair { kept_guids } = &planned.purpose {
             metadata.additional_guids = kept_guids.clone();
         }
-        blocking(move || metadata.stage(&metadata_path)).await?
+        with_disk_wait_notice(
+            blocking(move || metadata.stage(&metadata_path)),
+            context,
+            &episode.title,
+            reporter,
+            DISK_WAIT_SLOW_AFTER,
+        )
+        .await?
     };
     let staged_metadata = match staged_metadata {
         Ok(staged_metadata) => staged_metadata,

@@ -1716,6 +1716,110 @@ mod tests {
     }
 
     // =========================================================
+    // Waits for the disk
+    // =========================================================
+
+    /// The events of every download, one list of event names per download
+    ///
+    /// A download is the run of events of one slot from its
+    /// `DownloadStarting` on. Slots are reused and the events of concurrent
+    /// downloads interleave, so the flat event list cannot be read per
+    /// episode. Runs of progress updates count once.
+    fn download_runs(events: &[ProgressEvent]) -> Vec<Vec<&'static str>> {
+        let mut runs: Vec<Vec<&'static str>> = Vec::new();
+        let mut run_of_slot = std::collections::HashMap::new();
+        for event in events {
+            let (slot, name) = match event {
+                ProgressEvent::DownloadStarting { download_id, .. } => (download_id, "starting"),
+                ProgressEvent::DownloadProgress { download_id, .. } => (download_id, "progress"),
+                ProgressEvent::DownloadSyncing { download_id, .. } => (download_id, "syncing"),
+                ProgressEvent::DownloadSyncSlow { download_id, .. } => (download_id, "slow"),
+                ProgressEvent::DownloadSynced { download_id, .. } => (download_id, "synced"),
+                ProgressEvent::DownloadCompleted { download_id, .. } => (download_id, "completed"),
+                ProgressEvent::EpisodeAlreadyStored { download_id, .. } => {
+                    (download_id, "already stored")
+                }
+                ProgressEvent::DownloadFailed { download_id, .. } => (download_id, "failed"),
+                _ => continue,
+            };
+            if name == "starting" {
+                runs.push(Vec::new());
+                run_of_slot.insert(*slot, runs.len() - 1);
+            }
+            let run = &mut runs[run_of_slot[slot]];
+            if name != "progress" || run.last() != Some(&"progress") {
+                run.push(name);
+            }
+        }
+        runs
+    }
+
+    #[tokio::test]
+    async fn sync_reports_the_wait_for_the_audio_and_for_the_metadata_of_every_download() {
+        for max_concurrent in [1, 3] {
+            let dir = tempdir().unwrap();
+            let reporter = RecordingReporter::default();
+            let options = SyncOptions {
+                max_concurrent,
+                ..Default::default()
+            };
+
+            let client = MockHttpClient {
+                feed_xml: SAMPLE_FEED.to_string(),
+                audio_data: b"fake audio".to_vec(),
+            };
+
+            sync_podcast(
+                &client,
+                "https://example.com/feed.xml",
+                dir.path(),
+                &options,
+                &reporter,
+            )
+            .await
+            .unwrap();
+            let events = reporter.events();
+
+            assert_eq!(
+                download_runs(&events),
+                vec![
+                    [
+                        "starting",
+                        "progress",
+                        "syncing",
+                        "synced",
+                        "syncing",
+                        "synced",
+                        "completed"
+                    ];
+                    2
+                ],
+                "with {} concurrent downloads",
+                max_concurrent
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_reports_no_disk_wait_for_the_metadata_of_audio_it_already_stores() {
+        let dir = tempdir().unwrap();
+        store_episode(dir.path(), NOMAD_STEM, &NOMAD_ORIGINAL, b"fake audio");
+
+        let (_, events) = sync_recording(dir.path(), &[REISSUED]).await;
+
+        assert_eq!(
+            download_runs(&events),
+            vec![vec![
+                "starting",
+                "progress",
+                "syncing",
+                "synced",
+                "already stored"
+            ]]
+        );
+    }
+
+    // =========================================================
     // Re-issued episodes with identical audio
     // =========================================================
 

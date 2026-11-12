@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
@@ -107,6 +109,57 @@ impl StagedDownload {
     }
 }
 
+/// How long waiting for the file system to confirm a write goes unremarked
+///
+/// After it, the progress display says that the disk is slow. The sync of a
+/// local disk takes milliseconds; a network share can take minutes.
+pub(crate) const DISK_WAIT_SLOW_AFTER: Duration = Duration::from_secs(30);
+
+/// Await `work`, which waits for the file system to confirm a write, and
+/// report the wait
+///
+/// Reports `DownloadSyncing` first. If `work` takes longer than `threshold`,
+/// reports `DownloadSyncSlow` once and keeps waiting, since giving up would
+/// leave the file unsynced. Reports `DownloadSynced` when `work` ends,
+/// whatever it returns.
+pub(crate) async fn with_disk_wait_notice<T>(
+    work: impl Future<Output = T>,
+    context: &DownloadContext,
+    episode_title: &str,
+    reporter: &dyn ProgressReporter,
+    threshold: Duration,
+) -> T {
+    reporter.report(ProgressEvent::DownloadSyncing {
+        download_id: context.download_id,
+        episode_title: episode_title.to_string(),
+        episode_index: context.episode_index,
+        total_to_download: context.total_to_download,
+    });
+
+    let mut work = std::pin::pin!(work);
+    let result = tokio::select! {
+        result = &mut work => result,
+        () = tokio::time::sleep(threshold) => {
+            reporter.report(ProgressEvent::DownloadSyncSlow {
+                download_id: context.download_id,
+                episode_title: episode_title.to_string(),
+                episode_index: context.episode_index,
+                total_to_download: context.total_to_download,
+                threshold,
+            });
+            work.await
+        }
+    };
+
+    reporter.report(ProgressEvent::DownloadSynced {
+        download_id: context.download_id,
+        episode_title: episode_title.to_string(),
+        episode_index: context.episode_index,
+        total_to_download: context.total_to_download,
+    });
+    result
+}
+
 /// Download an episode into the partial file next to `output_path`
 ///
 /// Streams the response body to disk while computing a SHA-256 hash. The
@@ -117,6 +170,31 @@ pub async fn stage_download<C: HttpClient>(
     output_path: &Path,
     context: &DownloadContext,
     reporter: &dyn ProgressReporter,
+) -> Result<StagedDownload, DownloadError> {
+    stage_download_with(
+        client,
+        episode,
+        output_path,
+        context,
+        reporter,
+        DISK_WAIT_SLOW_AFTER,
+        sync_file,
+    )
+    .await
+}
+
+/// [`stage_download`] with the sync of the finished file and the time after
+/// which a wait for it counts as slow chosen by the caller
+///
+/// Lets tests hold the sync until they release it.
+pub(crate) async fn stage_download_with<C: HttpClient>(
+    client: &C,
+    episode: &Episode,
+    output_path: &Path,
+    context: &DownloadContext,
+    reporter: &dyn ProgressReporter,
+    slow_after: Duration,
+    sync: impl FnOnce(&std::fs::File) -> std::io::Result<()> + Send + 'static,
 ) -> Result<StagedDownload, DownloadError> {
     let url = episode.enclosure.url.as_str();
 
@@ -208,9 +286,13 @@ pub async fn stage_download<C: HttpClient>(
     };
     file.flush().await.map_err(write_failed)?;
     let file = file.into_std().await;
-    tokio::task::spawn_blocking(move || sync_file(&file))
+    let sync_work = async {
+        tokio::task::spawn_blocking(move || sync(&file))
+            .await
+            .map_err(std::io::Error::other)?
+    };
+    with_disk_wait_notice(sync_work, context, &episode.title, reporter, slow_after)
         .await
-        .map_err(|e| write_failed(std::io::Error::other(e)))?
         .map_err(write_failed)?;
 
     Ok(StagedDownload {
@@ -505,5 +587,189 @@ mod tests {
 
         assert!(!output_path.exists());
         assert!(!dir.path().join("episode.mp3.partial").exists());
+    }
+
+    /// Records every reported event and runs `on_slow` when a wait is
+    /// reported as slow
+    struct GateReporter {
+        events: std::sync::Mutex<Vec<ProgressEvent>>,
+        on_slow: Box<dyn Fn() + Send + Sync>,
+    }
+
+    impl GateReporter {
+        fn new(on_slow: impl Fn() + Send + Sync + 'static) -> Self {
+            Self {
+                events: Default::default(),
+                on_slow: Box::new(on_slow),
+            }
+        }
+
+        /// Names of the wait events reported so far, in order
+        fn waits(&self) -> Vec<&'static str> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event {
+                    ProgressEvent::DownloadSyncing { .. } => Some("syncing"),
+                    ProgressEvent::DownloadSyncSlow { .. } => Some("slow"),
+                    ProgressEvent::DownloadSynced { .. } => Some("synced"),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl ProgressReporter for GateReporter {
+        fn report(&self, event: ProgressEvent) {
+            let slow = matches!(event, ProgressEvent::DownloadSyncSlow { .. });
+            self.events.lock().unwrap().push(event);
+            if slow {
+                (self.on_slow)();
+            }
+        }
+    }
+
+    /// A gate a blocking closure waits on until the test opens it
+    fn gate() -> (
+        impl Fn() + Send + Sync + 'static,
+        std::sync::mpsc::Receiver<()>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = std::sync::Mutex::new(sender);
+        (
+            move || {
+                let _ = sender.lock().unwrap().send(());
+            },
+            receiver,
+        )
+    }
+
+    /// Bound for tests that wait on a gate, so a gate that never opens fails
+    /// the test instead of hanging it
+    const GATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn a_fast_wait_reports_syncing_then_synced() {
+        let reporter = GateReporter::new(|| {});
+
+        let result = with_disk_wait_notice(
+            async { 7 },
+            &context(),
+            "Test Episode",
+            &reporter,
+            Duration::from_secs(3600),
+        )
+        .await;
+
+        assert_eq!(result, 7);
+        assert_eq!(reporter.waits(), ["syncing", "synced"]);
+    }
+
+    #[tokio::test]
+    async fn a_slow_wait_is_reported_once_and_awaited_to_its_end() {
+        let (open_gate, closed_gate) = gate();
+        let reporter = GateReporter::new(open_gate);
+
+        let work = async {
+            tokio::task::spawn_blocking(move || closed_gate.recv().map(|()| "synced"))
+                .await
+                .unwrap()
+        };
+        let result = tokio::time::timeout(
+            GATE_TIMEOUT,
+            with_disk_wait_notice(work, &context(), "Test Episode", &reporter, Duration::ZERO),
+        )
+        .await
+        .expect("no DownloadSyncSlow opened the gate");
+
+        assert_eq!(result, Ok("synced"));
+        assert_eq!(reporter.waits(), ["syncing", "slow", "synced"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_wait_still_ends_with_synced() {
+        let reporter = GateReporter::new(|| {});
+
+        let result: std::io::Result<()> = with_disk_wait_notice(
+            async { Err(std::io::Error::from_raw_os_error(libc::EIO)) },
+            &context(),
+            "Test Episode",
+            &reporter,
+            Duration::from_secs(3600),
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
+        assert_eq!(reporter.waits(), ["syncing", "synced"]);
+    }
+
+    #[tokio::test]
+    async fn the_audio_sync_wait_is_reported_while_the_file_is_still_partial() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+        let partial_path = dir.path().join("episode.mp3.partial");
+        let (open_gate, closed_gate) = gate();
+        let seen_while_slow = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let reporter = {
+            let (output_path, partial_path) = (output_path.clone(), partial_path.clone());
+            let seen_while_slow = seen_while_slow.clone();
+            GateReporter::new(move || {
+                let partial_len = std::fs::metadata(&partial_path).map(|m| m.len()).ok();
+                *seen_while_slow.lock().unwrap() = Some((partial_len, output_path.exists()));
+                open_gate();
+            })
+        };
+
+        let staged = tokio::time::timeout(
+            GATE_TIMEOUT,
+            stage_download_with(
+                &ok_client(),
+                &make_episode(),
+                &output_path,
+                &context(),
+                &reporter,
+                Duration::ZERO,
+                move |_| closed_gate.recv().map_err(std::io::Error::other),
+            ),
+        )
+        .await
+        .expect("no DownloadSyncSlow opened the gate")
+        .unwrap();
+
+        assert_eq!(
+            *seen_while_slow.lock().unwrap(),
+            Some((Some(18), false)),
+            "the partial file holds every byte and the final name is not taken"
+        );
+        assert_eq!(reporter.waits(), ["syncing", "slow", "synced"]);
+        staged.finalize().await.unwrap();
+        assert_eq!(std::fs::read(&output_path).unwrap(), b"test audio content");
+    }
+
+    #[tokio::test]
+    async fn a_failing_sync_fails_the_download_and_keeps_the_partial_file() {
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("episode.mp3");
+
+        let result = stage_download_with(
+            &ok_client(),
+            &make_episode(),
+            &output_path,
+            &context(),
+            &NoopReporter,
+            DISK_WAIT_SLOW_AFTER,
+            |_| Err(std::io::Error::from_raw_os_error(libc::EIO)),
+        )
+        .await;
+
+        match result.unwrap_err() {
+            DownloadError::FileWriteFailed { path, source } => {
+                assert_eq!(path, dir.path().join("episode.mp3.partial"));
+                assert_eq!(source.raw_os_error(), Some(libc::EIO));
+            }
+            other => panic!("expected FileWriteFailed, got {other:?}"),
+        }
+        assert!(dir.path().join("episode.mp3.partial").exists());
     }
 }
